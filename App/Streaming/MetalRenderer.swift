@@ -227,9 +227,12 @@ final class StreamMetalView: UIView {
 	var onTouch: ((ControllerInput.TouchEvent) -> Void)?
 	/// A quick tap that didn't move: sent instead of `.up` so it can become a click.
 	var onTap: ((Int) -> Void)?
+	/// Top-right hot corner (settings)
 	var onCornerTap: (() -> Void)?
+	/// Top-left hot corner (PS button)
+	var onLeftCornerTap: (() -> Void)?
 
-	/// Hot corner in points, measured from the top-right of the view
+	/// Hot corner size in points, at the top-right and top-left of the view
 	static let cornerSize = CGSize(width: 140, height: 90)
 	private static let tapMaxDuration: TimeInterval = 0.25
 	private static let tapMaxMovement: CGFloat = 12
@@ -268,6 +271,10 @@ final class StreamMetalView: UIView {
 		CGRect(x: bounds.maxX - Self.cornerSize.width, y: bounds.minY, width: Self.cornerSize.width, height: Self.cornerSize.height)
 	}
 
+	private var leftCornerRect: CGRect {
+		CGRect(x: bounds.minX, y: bounds.minY, width: Self.cornerSize.width, height: Self.cornerSize.height)
+	}
+
 	private func touchpadPoint(_ p: CGPoint) -> (UInt16, UInt16) {
 		guard bounds.width > 0, bounds.height > 0 else { return (0, 0) }
 		let nx = min(max(p.x / bounds.width, 0), 1)
@@ -280,6 +287,10 @@ final class StreamMetalView: UIView {
 			let p = touch.location(in: self)
 			if cornerRect.contains(p) {
 				onCornerTap?()
+				continue
+			}
+			if leftCornerRect.contains(p) {
+				onLeftCornerTap?()
 				continue
 			}
 			let used = Set(tracked.values.map(\.slot))

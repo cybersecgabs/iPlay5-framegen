@@ -286,6 +286,18 @@ final class StreamSession {
 		handleTouch(event)
 	}
 
+	/// On-screen PS button, for controllers whose home button iOS doesn't pass through
+	func pressPSButton() {
+		let button = UInt32(CK_BUTTON_PS.rawValue)
+		extraButtons |= button
+		sendPad()
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+			guard let self else { return }
+			self.extraButtons &= ~button
+			self.sendPad()
+		}
+	}
+
 	/// A quick tap on the screen: click the touchpad at the touch point, then lift the finger.
 	func screenTap(slot: Int) {
 		let button = UInt32(CK_BUTTON_TOUCHPAD.rawValue)

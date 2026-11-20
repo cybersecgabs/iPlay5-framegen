@@ -18,7 +18,7 @@ Not affiliated with or endorsed by Sony Interactive Entertainment. "PlayStation"
 - **Picture:** hardware HEVC/H.264 decode drawn with Metal at the panel's native resolution, up to 1080p60 (the PS5's Remote Play limit) and the highest bitrate the console allows. Sharper Catmull-Rom upscaling.
 - **HDR:** 10-bit HDR10 straight to the display with EDR. Toggle it per stream.
 - **Fit or Zoom to fill:** see the whole picture with black bars, or fill the screen and crop the overflow.
-- **Controllers:** the PS button goes to the PS5, not iOS. Phone gyro is used for motion controls when your controller has none. Rumble works, and DualSense touchpad, motion and adaptive triggers are passed through (approximate).
+- **Controllers:** the controller's home/logo button acts as the PS button, and there's an on-screen PS button for controllers that don't have one (or whose button iOS doesn't pass through, like the GameSir G8+). Phone gyro is used for motion controls when your controller has none. Rumble works, and DualSense touchpad, motion and adaptive triggers are passed through (approximate).
 - **Touchscreen as touchpad:** swipe to move a finger (up to two), quick tap to click.
 - **Easy setup:** finds your PS5 on Wi-Fi automatically and follows it if its IP address changes. Sign in to PSN to fill in your account ID (passkeys and password managers work through the Safari option). Wake from rest mode.
 - **iPhone Duo:** streams on the inner screen, and the stream stays landscape once it's sideways. On the outer screen you can browse, link and wake consoles. Tap Play there and it connects as soon as you unfold. Folding mid-game pauses the stream.
@@ -48,7 +48,7 @@ https://raw.githubusercontent.com/reefbarman/iPlay5/main/altstore-source.json
 5. On the PS5, open **Settings › System › Remote Play › Link Device**, enter the PIN in the app and tap **Link**.
 6. Connect your controller and tap **Play**.
 
-While streaming: tap the top-right corner, then the gear, to open settings. Or hold **Select + Start** for a second.
+While streaming: tap the top-right corner, then the gear, to open settings. Or hold **Select + Start** for a second. Tap the top-left corner, then the PlayStation logo, to press the PS button.
 
 Start at 1080p60 with H.265. HDR needs H.265 and HDR enabled on the PS5. For the most reliable stream, use 5 GHz Wi-Fi with the PS5 wired to the router.
 

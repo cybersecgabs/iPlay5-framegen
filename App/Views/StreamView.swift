@@ -19,6 +19,8 @@ struct StreamView: View {
 	/// No controller connected yet; we ask before connecting (there are no on-screen controls)
 	@State private var needsController = !Self.hasController
 	@State private var showSettingsHint = false
+	@State private var showPSButton = false
+	@State private var hidePSButton: Task<Void, Never>?
 	@State private var pin = ""
 
 	private static var hasController: Bool {
@@ -65,7 +67,8 @@ struct StreamView: View {
 					renderer: renderer,
 					onTouch: { [weak session] in session?.screenTouch($0) },
 					onTap: { [weak session] in session?.screenTap(slot: $0) },
-					onCornerTap: revealMenuButton
+					onCornerTap: revealMenuButton,
+					onLeftCornerTap: revealPSButton
 				)
 				.ignoresSafeArea()
 			}
@@ -84,6 +87,10 @@ struct StreamView: View {
 					.transition(.opacity)
 			}
 
+			if showPSButton {
+				psButton
+					.transition(.opacity)
+			}
 
 			if needsController && session == nil {
 				controllerOverlay
@@ -157,7 +164,41 @@ struct StreamView: View {
 		}
 	}
 
-	/// Each time a stream starts, point at the hidden settings corner, then fade out
+	// MARK: - PS button (top-left hot corner)
+
+	private func revealPSButton() {
+		withAnimation(.easeOut(duration: 0.2)) { showPSButton = true }
+		schedulePSButtonHide()
+	}
+
+	private func schedulePSButtonHide() {
+		hidePSButton?.cancel()
+		hidePSButton = Task { @MainActor in
+			try? await Task.sleep(for: .seconds(3))
+			guard !Task.isCancelled else { return }
+			withAnimation(.easeIn(duration: 0.6)) { showPSButton = false }
+		}
+	}
+
+	private var psButton: some View {
+		Button {
+			session?.pressPSButton()
+			// Stay visible a little longer in case they want to press it again
+			schedulePSButtonHide()
+		} label: {
+			Image(systemName: "playstation.logo")
+				.font(.title2)
+				.foregroundStyle(.white)
+				.frame(width: 52, height: 52)
+				.background(.black.opacity(0.55), in: Circle())
+		}
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+		.padding(.top, 14)
+		.padding(.leading, 20)
+		.ignoresSafeArea()
+	}
+
+	/// Each time a stream starts, point at the hidden corners, then fade out
 	private func flashSettingsHint() {
 		withAnimation(.easeOut(duration: 0.3)) { showSettingsHint = true }
 		Task { @MainActor in
@@ -167,25 +208,44 @@ struct StreamView: View {
 	}
 
 	private var settingsHint: some View {
-		HStack(spacing: 10) {
-			Text("Tap this corner for settings")
-				.font(.subheadline.weight(.semibold))
-				.padding(.horizontal, 14)
-				.padding(.vertical, 8)
-				.background(.black.opacity(0.65), in: Capsule())
-			Image(systemName: "arrow.right")
-				.font(.title3.weight(.bold))
-			Image(systemName: "gearshape.fill")
-				.font(.title2)
-				.frame(width: 52, height: 52)
-				.background(.black.opacity(0.55), in: Circle())
+		HStack(alignment: .top) {
+			if !showPSButton {
+				HStack(spacing: 10) {
+					hintIcon("playstation.logo")
+					Image(systemName: "arrow.left")
+						.font(.title3.weight(.bold))
+					hintLabel("Tap this corner for the PS button")
+				}
+			}
+			Spacer(minLength: 16)
+			HStack(spacing: 10) {
+				hintLabel("Tap this corner for settings")
+				Image(systemName: "arrow.right")
+					.font(.title3.weight(.bold))
+				hintIcon("gearshape.fill")
+			}
 		}
 		.foregroundStyle(.white)
-		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 		.padding(.top, 14)
-		.padding(.trailing, 20)
+		.padding(.horizontal, 20)
 		.ignoresSafeArea()
 		.allowsHitTesting(false)
+	}
+
+	private func hintLabel(_ text: String) -> some View {
+		Text(text)
+			.font(.subheadline.weight(.semibold))
+			.padding(.horizontal, 14)
+			.padding(.vertical, 8)
+			.background(.black.opacity(0.65), in: Capsule())
+	}
+
+	private func hintIcon(_ systemName: String) -> some View {
+		Image(systemName: systemName)
+			.font(.title2)
+			.frame(width: 52, height: 52)
+			.background(.black.opacity(0.55), in: Circle())
 	}
 
 	private var menuButton: some View {
@@ -364,6 +424,7 @@ private struct MetalStreamView: UIViewRepresentable {
 	let onTouch: (ControllerInput.TouchEvent) -> Void
 	let onTap: (Int) -> Void
 	let onCornerTap: () -> Void
+	let onLeftCornerTap: () -> Void
 
 	func makeUIView(context: Context) -> StreamMetalView {
 		let view = StreamMetalView(renderer: renderer)
@@ -375,5 +436,6 @@ private struct MetalStreamView: UIViewRepresentable {
 		uiView.onTouch = onTouch
 		uiView.onTap = onTap
 		uiView.onCornerTap = onCornerTap
+		uiView.onLeftCornerTap = onLeftCornerTap
 	}
 }
