@@ -8,6 +8,8 @@ PS5 Remote Play for iPhone over your local network, built on [chiaki-ng](https:/
 > **You need a game controller.** There's no on-screen virtual controller. Any controller iOS supports works: DualSense, DualShock 4, Xbox, Backbone, GameSir, Razer Kishi and so on. The touchscreen acts as the DualSense touchpad.
 >
 > **iPhone Duo recommendation:** the [GameSir G8+](https://www.gamesir.hk/) **Bluetooth** version works well clipped onto the Duo. Avoid the Apple-specific (USB-C) G8 version, because it doesn't work with the Duo. The G8+ has no gyro, so iPlay5 uses the phone's gyro for motion controls.
+>
+> **3D-printable shim:** the G8+'s grip can press the Duo's side button and trigger Siri mid-game. I made a free [iPhone Duo shim for the GameSir G8+](https://makerworld.com/en/models/3648382-iphone-duo-shim-for-gamesir-g8-no-siri-presses) on MakerWorld that stops it.
 
 Not affiliated with or endorsed by Sony Interactive Entertainment. "PlayStation" and "PS5" are trademarks of Sony Interactive Entertainment Inc.
 
