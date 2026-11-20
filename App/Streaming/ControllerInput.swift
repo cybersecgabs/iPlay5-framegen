@@ -90,7 +90,7 @@ final class ControllerInput {
 			startPhoneMotion()
 			return
 		}
-		log.info("Using controller: \(next.vendorName ?? "?") (\(next.productCategory))")
+		log.notice("Using controller: \(next.vendorName ?? "?", privacy: .public) (\(next.productCategory, privacy: .public))")
 
 		claimSystemGestures(next)
 		pad.valueChangedHandler = { [weak self] pad, _ in self?.padChanged(pad) }
@@ -331,7 +331,7 @@ final class RumbleOutput {
 				engines.append(engine)
 				players.append(player)
 			} catch {
-				log.error("Haptics: \(error.localizedDescription)")
+				log.error("Haptics: \(error.localizedDescription, privacy: .public)")
 			}
 		}
 	}

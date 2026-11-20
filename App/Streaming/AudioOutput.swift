@@ -106,7 +106,7 @@ final class AudioOutput {
 		do {
 			try engine.start()
 		} catch {
-			log.error("Audio engine: \(error.localizedDescription)")
+			log.error("Audio engine: \(error.localizedDescription, privacy: .public)")
 		}
 	}
 
@@ -138,7 +138,7 @@ final class AudioOutput {
 			try audioSession.setPreferredIOBufferDuration(0.005)
 			try audioSession.setActive(true)
 		} catch {
-			log.error("Audio session: \(error.localizedDescription)")
+			log.error("Audio session: \(error.localizedDescription, privacy: .public)")
 		}
 	}
 
@@ -154,7 +154,7 @@ final class AudioOutput {
 		do {
 			try engine.start()
 		} catch {
-			log.error("Audio engine restart: \(error.localizedDescription)")
+			log.error("Audio engine restart: \(error.localizedDescription, privacy: .public)")
 		}
 	}
 

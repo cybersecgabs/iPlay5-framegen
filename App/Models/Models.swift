@@ -55,7 +55,7 @@ final class ConsoleStore {
 			let data = try JSONEncoder().encode(consoles)
 			try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
 		} catch {
-			log.error("Saving consoles failed: \(error.localizedDescription)")
+			log.error("Saving consoles failed: \(error.localizedDescription, privacy: .public)")
 		}
 	}
 }

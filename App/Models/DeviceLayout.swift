@@ -2,11 +2,13 @@ import UIKit
 
 /// Works out whether we're on a foldable, and which of its screens we're on.
 ///
-/// Both iPhone Duo screens are a similar shape (inner 951×669pt, outer 678×466pt,
-/// both about 1.4:1), so they're told apart by size. The inner screen's short
-/// side is far bigger than any normal iPhone's (440pt at most).
+/// Both iPhone Duo screens are a similar shape (inner 2853×2007px, outer
+/// 2034×1398px, both about 1.4:1), so they're told apart by size. The inner
+/// screen's short side is far bigger than any normal iPhone's (1320px at most).
+/// Sizes are compared in pixels, not points: Display Zoom ("Larger Text")
+/// shrinks the point size of the same panel.
 enum DeviceLayout {
-	private static let innerScreenMinShortSide: CGFloat = 560
+	private static let innerScreenMinShortSidePixels: CGFloat = 1700
 	/// Model identifiers of known foldables. Others are picked up the first time
 	/// an inner-screen-sized window is seen.
 	private static let knownFoldables: Set<String> = ["iPhone19,4"]
@@ -24,8 +26,12 @@ enum DeviceLayout {
 		knownFoldables.contains(modelIdentifier) || UserDefaults.standard.bool(forKey: seenInnerScreenKey)
 	}
 
+	static var nativeScale: CGFloat {
+		(UIApplication.shared.connectedScenes.first as? UIWindowScene)?.screen.nativeScale ?? UIScreen.main.nativeScale
+	}
+
 	static func isInnerScreen(_ size: CGSize) -> Bool {
-		min(size.width, size.height) >= innerScreenMinShortSide
+		min(size.width, size.height) * nativeScale >= innerScreenMinShortSidePixels
 	}
 
 	/// True on a foldable that's currently showing on its outer screen.
@@ -34,7 +40,9 @@ enum DeviceLayout {
 	}
 
 	static func noteWindowSize(_ size: CGSize) {
-		if isInnerScreen(size), !UserDefaults.standard.bool(forKey: seenInnerScreenKey) {
+		let inner = isInnerScreen(size)
+		log.notice("Window \(Int(size.width), privacy: .public)x\(Int(size.height), privacy: .public)pt at \(nativeScale, privacy: .public)x: foldable \(isFoldable, privacy: .public), inner screen \(inner, privacy: .public)")
+		if inner, !UserDefaults.standard.bool(forKey: seenInnerScreenKey) {
 			UserDefaults.standard.set(true, forKey: seenInnerScreenKey)
 		}
 	}

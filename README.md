@@ -52,6 +52,10 @@ While streaming: tap the top-right corner, then the gear, to open settings. Or h
 
 Start at 1080p60 with H.265. HDR needs H.265 and HDR enabled on the PS5. For the most reliable stream, use 5 GHz Wi-Fi with the PS5 wired to the router.
 
+## Reporting a problem
+
+Right after the problem happens (without closing the app), open **Settings › Share diagnostics** and attach the file to a [GitHub issue](https://github.com/reefbarman/iPlay5/issues/new). It has your phone model, screen details, settings and the app's logs since it was opened. IP addresses, keys, account IDs and console names are removed. It's plain text, so you can check it before sending.
+
 ## Build from source
 
 Needs a Mac with Xcode 16 or later and Homebrew.

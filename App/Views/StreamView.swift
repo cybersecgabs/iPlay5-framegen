@@ -12,6 +12,8 @@ struct StreamView: View {
 	@State private var showMenuButton = false
 	@State private var hideMenuButton: Task<Void, Never>?
 	@State private var folded = false
+	/// The user says this screen is fine, whatever the fold check thinks
+	@State private var playHereAnyway = false
 	/// Unfolded but the window is portrait: we wait (or pause) and ask the user
 	/// to turn the phone. Once a stream is landscape, AppDelegate locks it there.
 	@State private var portrait = false
@@ -164,7 +166,7 @@ struct StreamView: View {
 	private func update() {
 		let size = windowSize
 		guard size.width > 0, size.height > 0 else { return }
-		let isFolded = DeviceLayout.isFolded(size)
+		let isFolded = DeviceLayout.isFolded(size) && !playHereAnyway
 		folded = isFolded
 		portrait = !isFolded && size.height > size.width
 		let canPlay = !isFolded && !portrait
@@ -425,7 +427,16 @@ struct StreamView: View {
 				if session == nil {
 					Text("Open your phone to play").font(.title2.bold())
 					Text("\(console.name) connects as soon as you unfold.").foregroundStyle(.secondary)
-					Button("Cancel") { dismiss() }.buttonStyle(.bordered).padding(.top, 8)
+					HStack {
+						Button("Cancel") { dismiss() }.buttonStyle(.bordered)
+						Button("Play here anyway") {
+							log.notice("Play here anyway at \(Int(windowSize.width), privacy: .public)x\(Int(windowSize.height), privacy: .public)pt")
+							playHereAnyway = true
+							update()
+						}
+						.buttonStyle(.bordered)
+					}
+					.padding(.top, 8)
 				} else {
 					Text("Paused").font(.title2.bold())
 					Text("Unfold to keep playing.").foregroundStyle(.secondary)

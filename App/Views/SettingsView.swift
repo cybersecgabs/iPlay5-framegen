@@ -58,6 +58,7 @@ struct StreamSettingsForm: View {
 
 struct SettingsView: View {
 	@Environment(SettingsStore.self) private var store
+	@Environment(ConsoleStore.self) private var consoles
 	@Environment(\.dismiss) private var dismiss
 
 	var body: some View {
@@ -65,6 +66,22 @@ struct SettingsView: View {
 		NavigationStack {
 			Form {
 				StreamSettingsForm(settings: $store.settings)
+
+				Section {
+					ShareLink(
+						item: DiagnosticsReport(consoleNames: consoles.consoles.map(\.name), settings: store.settings),
+						preview: SharePreview("iPlay5 diagnostics")
+					) {
+						Label("Share diagnostics", systemImage: "ladybug")
+					}
+					Link(destination: URL(string: "https://github.com/reefbarman/iPlay5/issues/new")!) {
+						Label("Report a problem on GitHub", systemImage: "exclamationmark.bubble")
+					}
+				} header: {
+					Text("Help")
+				} footer: {
+					Text("The report has your phone model, screen details, settings and the app's logs since it was opened. IP addresses, keys, account IDs and console names are removed. Share it before closing the app, so the logs still cover the problem.")
+				}
 			}
 			.navigationTitle("Settings")
 			.navigationBarTitleDisplayMode(.inline)
