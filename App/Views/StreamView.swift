@@ -22,6 +22,10 @@ struct StreamView: View {
 	@State private var showPSButton = false
 	@State private var hidePSButton: Task<Void, Never>?
 	@State private var pin = ""
+	@State private var phone = PhoneStatus()
+	@State private var showHeatWarning = false
+	/// The corner hints show once per stream screen, not again after a reconnect
+	@State private var hintShown = false
 
 	private static var hasController: Bool {
 		GCController.controllers().contains { $0.extendedGamepad != nil }
@@ -33,6 +37,9 @@ struct StreamView: View {
 				.onAppear { updateFolded(geo.size) }
 				.onChange(of: geo.size) { _, size in updateFolded(size) }
 		}
+		// The text input keyboard must not shrink our size: that reads as folded/portrait,
+		// which hides the text box, which closes the keyboard, and round it goes
+		.ignoresSafeArea(.keyboard)
 		.statusBarHidden()
 		.persistentSystemOverlays(.hidden)
 		.defersSystemGestures(on: .all)
@@ -50,7 +57,12 @@ struct StreamView: View {
 			update()
 		}
 		.onChange(of: session?.state == .streaming) { _, streaming in
-			if streaming { flashSettingsHint() }
+			guard streaming, !hintShown else { return }
+			hintShown = true
+			flashSettingsHint()
+		}
+		.onChange(of: phone.isHot) { _, hot in
+			if hot, settingsStore.settings.fps > 30 { flashHeatWarning() }
 		}
 		.onChange(of: scenePhase) { _, phase in
 			session?.setPaused(phase != .active || folded || portrait)
@@ -90,6 +102,20 @@ struct StreamView: View {
 			if showPSButton {
 				psButton
 					.transition(.opacity)
+			}
+
+			if showHeatWarning {
+				heatWarning
+					.transition(.opacity)
+			}
+
+			if let session, let text = session.keyboardText, !folded, !portrait {
+				KeyboardOverlay(
+					initialText: text,
+					onChange: { session.keyboardChanged($0) },
+					onSubmit: { session.keyboardSubmit($0) },
+					onCancel: { session.keyboardCancel() }
+				)
 			}
 
 			if needsController && session == nil {
@@ -233,6 +259,31 @@ struct StreamView: View {
 		.allowsHitTesting(false)
 	}
 
+	// MARK: - Heat warning
+
+	private func flashHeatWarning() {
+		withAnimation(.easeOut(duration: 0.3)) { showHeatWarning = true }
+		Task { @MainActor in
+			try? await Task.sleep(for: .seconds(8))
+			withAnimation(.easeIn(duration: 0.8)) { showHeatWarning = false }
+		}
+	}
+
+	private var heatWarning: some View {
+		HStack(spacing: 8) {
+			Image(systemName: "thermometer.high")
+			Text("Your phone is getting hot. Switching to 30 fps in settings will help it cool down.")
+		}
+		.font(.subheadline.weight(.semibold))
+		.foregroundStyle(.white)
+		.padding(.horizontal, 14)
+		.padding(.vertical, 8)
+		.background(.black.opacity(0.7), in: Capsule())
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+		.padding(.bottom, 16)
+		.allowsHitTesting(false)
+	}
+
 	private func hintLabel(_ text: String) -> some View {
 		Text(text)
 			.font(.subheadline.weight(.semibold))
@@ -302,6 +353,15 @@ struct StreamView: View {
 			}
 			.padding(24)
 			.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+		case .reconnecting(let attempt):
+			VStack(spacing: 12) {
+				ProgressView().controlSize(.large)
+				Text("Connection lost. Reconnecting…").font(.headline)
+				Text("Attempt \(attempt) of \(StreamSession.maxReconnectAttempts)").foregroundStyle(.secondary)
+				Button("Cancel") { dismiss() }.buttonStyle(.bordered)
+			}
+			.padding(24)
+			.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
 		case .ended(let error):
 			VStack(spacing: 12) {
 				if let error {
@@ -312,7 +372,7 @@ struct StreamView: View {
 				}
 				HStack {
 					Button("Close") { dismiss() }.buttonStyle(.bordered)
-					Button("Reconnect") { session.start() }.buttonStyle(.borderedProminent)
+					Button("Reconnect") { session.reconnect() }.buttonStyle(.borderedProminent)
 				}
 			}
 			.padding(24)
@@ -390,6 +450,23 @@ struct StreamView: View {
 						dismiss()
 					}
 				}
+				Section {
+					LabeledContent {
+						Text(phone.batteryText)
+					} label: {
+						Label("Battery", systemImage: phone.batterySymbol)
+					}
+					LabeledContent {
+						Text(phone.thermalText).foregroundStyle(phone.isHot ? .orange : .secondary)
+					} label: {
+						Label("Temperature", systemImage: "thermometer.medium")
+					}
+					if phone.isHot && store.settings.fps > 30 {
+						Button("Switch to 30 fps to cool down") { store.settings.fps = 30 }
+					}
+				} header: {
+					Text("Phone")
+				}
 				StreamSettingsForm(settings: $store.settings)
 			}
 			.navigationTitle(console.name)
@@ -408,6 +485,7 @@ private struct StatsOverlay: View {
 			Text("\(stats.width)×\(stats.height) @ \(Int(stats.fps)) fps")
 			Text(String(format: "%.1f Mbps (asked %d)", stats.bitrateMbps, settings.bitrateMbps))
 			Text("\(settings.effectiveCodec == .h265 ? "HEVC" : "H.264")\(settings.hdr ? " HDR" : "")  decode \(String(format: "%.1f", stats.decodeMs)) ms")
+			Text(String(format: "ping %.0f ms  loss %.1f%%", stats.rttMs, stats.packetLoss * 100))
 			Text("lost \(stats.lostFrames)  failed \(stats.failedFrames)")
 			if let controller = stats.controller { Text(controller) }
 		}
@@ -415,6 +493,45 @@ private struct StatsOverlay: View {
 		.padding(8)
 		.background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
 		.foregroundStyle(.white)
+	}
+}
+
+/// Shown when a text box opens on the PS5: type with the iOS keyboard instead of
+/// the controller. Every change is sent, Send submits and Cancel closes the box.
+private struct KeyboardOverlay: View {
+	let initialText: String
+	let onChange: (String) -> Void
+	let onSubmit: (String) -> Void
+	let onCancel: () -> Void
+
+	@State private var text = ""
+	@FocusState private var focused: Bool
+
+	var body: some View {
+		VStack(spacing: 12) {
+			Text("Type on your phone").font(.headline)
+			TextField("Text", text: $text)
+				.textFieldStyle(.roundedBorder)
+				.textInputAutocapitalization(.never)
+				.autocorrectionDisabled()
+				.submitLabel(.send)
+				.focused($focused)
+				.onSubmit { onSubmit(text) }
+				.frame(maxWidth: 520)
+			HStack {
+				Button("Cancel", action: onCancel).buttonStyle(.bordered)
+				Button("Send") { onSubmit(text) }.buttonStyle(.borderedProminent)
+			}
+		}
+		.padding(20)
+		.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+		.padding(.top, 16)
+		.onAppear {
+			text = initialText
+			focused = true
+		}
+		.onChange(of: text) { _, new in onChange(new) }
 	}
 }
 

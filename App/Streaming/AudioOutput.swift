@@ -1,44 +1,67 @@
 import AVFoundation
 import ChiakiKit
+import UIKit
 
 /// Plays chiaki's decoded 48 kHz stereo audio with a short output buffer.
 ///
 /// The source node pulls straight from the C ring buffer in ck_bridge.c, which
 /// trims itself back to ~100 ms if playback ever falls behind.
+///
+/// iOS stops the engine for phone calls, Siri, and output changes such as
+/// AirPods connecting, so we restart it when those end.
 final class AudioOutput {
-	private let engine = AVAudioEngine()
+	private var engine = AVAudioEngine()
 	private var source: AVAudioSourceNode?
 	private let scratchFrames = 4096
 	private let scratch: UnsafeMutablePointer<Int16>
+	private var observers: [NSObjectProtocol] = []
+	private var isMuted = false
 
 	/// Read from the render thread. Set before start(), cleared after stop().
 	private var session: OpaquePointer?
 	private var primed = false
 	/// ~20 ms of audio before playback starts or resumes after an underrun
 	private let primeFrames = 960
+	private static let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)
 
 	init() {
 		scratch = .allocate(capacity: scratchFrames * 2)
+		let center = NotificationCenter.default
+		observers = [
+			center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+				// Call, Siri, alarm... The engine is already stopped when it begins.
+				let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+				if raw == AVAudioSession.InterruptionType.ended.rawValue {
+					self?.restart(reason: "interruption ended")
+				}
+			},
+			center.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] note in
+				// Output route or format changed (AirPods, speaker, etc.): the engine stopped itself
+				guard let self, note.object as? AVAudioEngine === self.engine else { return }
+				self.restart(reason: "output changed")
+			},
+			center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+				self?.rebuild()
+			},
+			center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+				// Safety net for anything above that didn't tell us
+				guard let self, self.source != nil, !self.engine.isRunning else { return }
+				self.restart(reason: "app became active")
+			},
+		]
 	}
 
 	deinit {
+		observers.forEach(NotificationCenter.default.removeObserver)
 		stop()
 		scratch.deallocate()
 	}
 
 	func start(session: OpaquePointer) {
 		self.session = session
-		let audioSession = AVAudioSession.sharedInstance()
-		do {
-			try audioSession.setCategory(.playback, mode: .default, options: [])
-			try audioSession.setPreferredSampleRate(48_000)
-			try audioSession.setPreferredIOBufferDuration(0.005)
-			try audioSession.setActive(true)
-		} catch {
-			log.error("Audio session: \(error.localizedDescription)")
-		}
+		activateAudioSession()
 
-		guard let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2) else { return }
+		guard let format = Self.format else { return }
 		let node = AVAudioSourceNode(format: format) { [unowned self] isSilence, _, frameCount, bufferList -> OSStatus in
 			let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
 			guard buffers.count >= 2,
@@ -79,6 +102,7 @@ final class AudioOutput {
 		source = node
 		engine.attach(node)
 		engine.connect(node, to: engine.mainMixerNode, format: format)
+		engine.mainMixerNode.outputVolume = isMuted ? 0 : 1
 		do {
 			try engine.start()
 		} catch {
@@ -97,7 +121,49 @@ final class AudioOutput {
 	}
 
 	var muted: Bool {
-		get { engine.mainMixerNode.outputVolume == 0 }
-		set { engine.mainMixerNode.outputVolume = newValue ? 0 : 1 }
+		get { isMuted }
+		set {
+			isMuted = newValue
+			engine.mainMixerNode.outputVolume = newValue ? 0 : 1
+		}
+	}
+
+	// MARK: - Recovery (main thread)
+
+	private func activateAudioSession() {
+		let audioSession = AVAudioSession.sharedInstance()
+		do {
+			try audioSession.setCategory(.playback, mode: .default, options: [])
+			try audioSession.setPreferredSampleRate(48_000)
+			try audioSession.setPreferredIOBufferDuration(0.005)
+			try audioSession.setActive(true)
+		} catch {
+			log.error("Audio session: \(error.localizedDescription)")
+		}
+	}
+
+	/// Reconnects our node (the output format may have changed) and starts the engine again.
+	private func restart(reason: String) {
+		guard let source, session != nil, let format = Self.format else { return }
+		log.notice("Restarting audio: \(reason, privacy: .public)")
+		activateAudioSession()
+		engine.stop()
+		engine.disconnectNodeOutput(source)
+		engine.connect(source, to: engine.mainMixerNode, format: format)
+		primed = false
+		do {
+			try engine.start()
+		} catch {
+			log.error("Audio engine restart: \(error.localizedDescription)")
+		}
+	}
+
+	/// The audio server restarted: every engine is dead, so start over with a new one.
+	private func rebuild() {
+		guard let session else { return }
+		log.notice("Rebuilding audio after a media services reset")
+		stop()
+		engine = AVAudioEngine()
+		start(session: session)
 	}
 }

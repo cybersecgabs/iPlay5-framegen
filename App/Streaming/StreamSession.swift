@@ -9,6 +9,10 @@ struct StreamStats: Equatable {
 	var width: Int32 = 0
 	var height: Int32 = 0
 	var decodeMs: Double = 0
+	/// Round trip measured while connecting
+	var rttMs: Double = 0
+	/// Packets lost recently, 0...1
+	var packetLoss: Double = 0
 	var failedFrames = 0
 	var lostFrames = 0
 	var hdrFrames = false
@@ -23,11 +27,17 @@ final class StreamSession {
 		case connecting
 		case streaming
 		case needsPIN(incorrect: Bool)
+		/// The connection dropped and we're trying again
+		case reconnecting(attempt: Int)
 		case ended(error: String?)
 	}
 
+	static let maxReconnectAttempts = 3
+
 	private(set) var state: State = .idle
 	private(set) var stats = StreamStats()
+	/// A text box is open on the PS5: the text it started with. nil when there's none.
+	private(set) var keyboardText: String?
 	/// Folded or backgrounded: video isn't drawn and audio is muted, connection stays up
 	private(set) var paused = false
 
@@ -47,6 +57,8 @@ final class StreamSession {
 	/// Latest controller state, so screen taps can add a touchpad click on top of it
 	@ObservationIgnored private var lastPad = CKPadState()
 	@ObservationIgnored private var extraButtons: UInt32 = 0
+	@ObservationIgnored private var reconnectAttempt = 0
+	@ObservationIgnored private var reconnectWork: DispatchWorkItem?
 
 	init(console: Console, settings: StreamSettings) {
 		self.console = console
@@ -66,7 +78,8 @@ final class StreamSession {
 			state = .ended(error: "Metal isn't available on this device.")
 			return
 		}
-		state = .connecting
+		if case .reconnecting = state {} else { state = .connecting }
+		keyboardText = nil
 		lostFrames = 0
 		lastDecoded = 0
 
@@ -75,7 +88,7 @@ final class StreamSession {
 		decoder.onFrame = { [weak renderer] frame in renderer?.display(frame) }
 		self.decoder = decoder
 		renderer.configure(hdr: settings.hdr, displayMode: settings.displayMode, bicubic: settings.sharpUpscaling)
-		renderer.setPaused(false)
+		renderer.setPaused(paused)
 
 		var config = CKSessionConfig()
 		let size = settings.resolution.size
@@ -88,6 +101,7 @@ final class StreamSession {
 		// Always advertise a DualSense: the PS5 then sends haptics/trigger data, and
 		// for other controllers the haptics are converted to rumble.
 		config.enable_dualsense = true
+		config.enable_keyboard = true
 		config.packet_loss_max = 0.05
 		config.verbose_log = false
 		withUnsafeMutableBytes(of: &config.regist_key) { _ = console.registKey.prefix(16).copyBytes(to: $0) }
@@ -157,6 +171,7 @@ final class StreamSession {
 		input.start()
 
 		audio.start(session: created)
+		audio.muted = paused
 
 		let err = ck_session_start(created)
 		if err != 0 {
@@ -170,8 +185,30 @@ final class StreamSession {
 
 	/// Stops streaming and frees everything. Safe to call more than once.
 	func stop() {
+		cancelReconnect()
 		teardown()
 		if case .ended = state {} else { state = .ended(error: nil) }
+	}
+
+	/// Manual reconnect from the "Disconnected" screen
+	func reconnect() {
+		cancelReconnect()
+		start()
+	}
+
+	private func cancelReconnect() {
+		reconnectWork?.cancel()
+		reconnectWork = nil
+		reconnectAttempt = 0
+	}
+
+	/// Drops that are worth retrying: the network went away or the connection
+	/// broke, as opposed to e.g. the console being in use or refusing us.
+	private static func isRetryable(quitReason code: Int32) -> Bool {
+		switch code {
+		case 2, 7, 8, 10, 11: true  // SESSION_REQUEST_UNKNOWN, CTRL_UNKNOWN, CTRL_CONNECT_FAILED, STREAM_CONNECTION_UNKNOWN, ..._REMOTE_DISCONNECTED
+		default: false
+		}
 	}
 
 	/// Applies new settings. Codec/resolution/bitrate/HDR changes need a reconnect.
@@ -211,6 +248,26 @@ final class StreamSession {
 	func putConsoleToSleep() {
 		guard let handle else { return }
 		ck_session_goto_bed(handle)
+	}
+
+	// MARK: - Text input
+
+	/// Sends the whole text whenever it changes
+	func keyboardChanged(_ text: String) {
+		guard let handle else { return }
+		ck_session_keyboard_set_text(handle, text)
+	}
+
+	func keyboardSubmit(_ text: String) {
+		guard let handle else { return }
+		ck_session_keyboard_set_text(handle, text)
+		ck_session_keyboard_accept(handle)
+		keyboardText = nil
+	}
+
+	func keyboardCancel() {
+		if let handle { ck_session_keyboard_reject(handle) }
+		keyboardText = nil
 	}
 
 	private func teardown() {
@@ -259,15 +316,38 @@ final class StreamSession {
 	private func handleEvent(_ type: CKEventType, code: Int32, message: String?) {
 		switch type {
 		case CK_EVENT_CONNECTED:
+			reconnectAttempt = 0
 			state = .streaming
 		case CK_EVENT_LOGIN_PIN_REQUEST:
 			state = .needsPIN(incorrect: code != 0)
+		case CK_EVENT_KEYBOARD_OPEN:
+			keyboardText = message ?? ""
+		case CK_EVENT_KEYBOARD_CLOSE:
+			keyboardText = nil
 		case CK_EVENT_QUIT:
 			// CHIAKI_QUIT_REASON_STOPPED (1) and ..._REMOTE_SHUTDOWN (12) are normal exits
 			let wasError = code != 1 && code != 12
+			// Only retry a connection that was working (or a retry that just failed)
+			let wasPlaying: Bool
+			switch state {
+			case .streaming, .reconnecting: wasPlaying = true
+			default: wasPlaying = false
+			}
 			// Tear down off the callback thread (we're on main via async)
 			teardown()
-			state = .ended(error: wasError ? message : nil)
+			if wasError, wasPlaying, Self.isRetryable(quitReason: code), reconnectAttempt < Self.maxReconnectAttempts {
+				reconnectAttempt += 1
+				let attempt = reconnectAttempt
+				log.notice("Connection lost (\(message ?? "?", privacy: .public)), reconnect attempt \(attempt)")
+				state = .reconnecting(attempt: attempt)
+				let work = DispatchWorkItem { [weak self] in self?.start() }
+				reconnectWork = work
+				// 1 s, 2 s, 4 s
+				DispatchQueue.main.asyncAfter(deadline: .now() + pow(2, Double(attempt - 1)), execute: work)
+			} else {
+				reconnectAttempt = 0
+				state = .ended(error: wasError ? message : nil)
+			}
 		default:
 			break
 		}
@@ -329,7 +409,11 @@ final class StreamSession {
 		var s = StreamStats()
 		s.fps = Double(decoded - lastDecoded)
 		lastDecoded = decoded
-		if let handle { s.bitrateMbps = ck_session_measured_bitrate_mbps(handle) }
+		if let handle {
+			s.bitrateMbps = ck_session_measured_bitrate_mbps(handle)
+			s.rttMs = ck_session_rtt_ms(handle)
+			s.packetLoss = ck_session_packet_loss(handle)
+		}
 		s.width = decoder.dimensions.width
 		s.height = decoder.dimensions.height
 		s.decodeMs = decoder.lastDecodeMs

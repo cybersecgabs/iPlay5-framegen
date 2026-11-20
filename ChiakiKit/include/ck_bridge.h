@@ -110,6 +110,12 @@ extern "C"
         CK_EVENT_QUIT = 1,
         CK_EVENT_LOGIN_PIN_REQUEST = 2,
         CK_EVENT_NICKNAME = 3,
+        /// A text box opened on the console. message: its current text (may be NULL).
+        CK_EVENT_KEYBOARD_OPEN = 4,
+        /// The console changed the text. message: the new text.
+        CK_EVENT_KEYBOARD_TEXT = 5,
+        /// The console closed the text box.
+        CK_EVENT_KEYBOARD_CLOSE = 6,
     } CKEventType;
 
     typedef struct
@@ -138,6 +144,8 @@ extern "C"
         unsigned int bitrate_kbps;
         CKCodec codec;
         bool enable_dualsense;
+        /// Ask the console to hand text boxes to us (CK_EVENT_KEYBOARD_*).
+        bool enable_keyboard;
         /// Upstream default is 0.05 (5%).
         double packet_loss_max;
         bool verbose_log;
@@ -156,6 +164,16 @@ extern "C"
     int ck_session_set_login_pin(CKSession *session, const char *pin);
     int ck_session_goto_bed(CKSession *session);
     double ck_session_measured_bitrate_mbps(CKSession *session);
+    /// Fraction (0...1) of packets lost over the last congestion-control interval.
+    double ck_session_packet_loss(CKSession *session);
+    /// Round trip time measured while connecting, in milliseconds.
+    double ck_session_rtt_ms(CKSession *session);
+
+    /// Text input for a console text box: send the whole text on every change,
+    /// then accept (submit) or reject (cancel).
+    int ck_session_keyboard_set_text(CKSession *session, const char *text);
+    int ck_session_keyboard_accept(CKSession *session);
+    int ck_session_keyboard_reject(CKSession *session);
 
     // Controller ---------------------------------------------------------------
 

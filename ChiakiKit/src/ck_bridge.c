@@ -487,6 +487,18 @@ static void event_cb(ChiakiEvent *event, void *user)
 			if(s->cb.on_event)
 				s->cb.on_event(s->cb.user, CK_EVENT_NICKNAME, 0, event->server_nickname);
 			break;
+		case CHIAKI_EVENT_KEYBOARD_OPEN:
+			if(s->cb.on_event)
+				s->cb.on_event(s->cb.user, CK_EVENT_KEYBOARD_OPEN, 0, event->keyboard.text_str);
+			break;
+		case CHIAKI_EVENT_KEYBOARD_TEXT_CHANGE:
+			if(s->cb.on_event)
+				s->cb.on_event(s->cb.user, CK_EVENT_KEYBOARD_TEXT, 0, event->keyboard.text_str);
+			break;
+		case CHIAKI_EVENT_KEYBOARD_REMOTE_CLOSE:
+			if(s->cb.on_event)
+				s->cb.on_event(s->cb.user, CK_EVENT_KEYBOARD_CLOSE, 0, NULL);
+			break;
 		case CHIAKI_EVENT_RUMBLE:
 			if(s->cb.on_rumble)
 				s->cb.on_rumble(s->cb.user, event->rumble.left, event->rumble.right);
@@ -583,7 +595,7 @@ CKSession *ck_session_create(const CKSessionConfig *config, const CKSessionCallb
 	info.video_profile.bitrate = config->bitrate_kbps;
 	info.video_profile.codec = config->ps5 ? (ChiakiCodec)config->codec : CHIAKI_CODEC_H264;
 	info.video_profile_auto_downgrade = true;
-	info.enable_keyboard = false;
+	info.enable_keyboard = config->enable_keyboard;
 	info.enable_dualsense = config->enable_dualsense;
 	info.audio_video_disabled = 0;
 	info.auto_regist = false;
@@ -682,6 +694,41 @@ double ck_session_measured_bitrate_mbps(CKSession *s)
 	if(!s || !s->started)
 		return 0.0;
 	return s->session.stream_connection.measured_bitrate;
+}
+
+double ck_session_packet_loss(CKSession *s)
+{
+	if(!s || !s->started)
+		return 0.0;
+	return s->session.stream_connection.congestion_control.packet_loss;
+}
+
+double ck_session_rtt_ms(CKSession *s)
+{
+	if(!s || !s->started)
+		return 0.0;
+	return (double)s->session.rtt_us / 1000.0;
+}
+
+int ck_session_keyboard_set_text(CKSession *s, const char *text)
+{
+	if(!s || !s->started || !text)
+		return CHIAKI_ERR_UNINITIALIZED;
+	return (int)chiaki_session_keyboard_set_text(&s->session, text);
+}
+
+int ck_session_keyboard_accept(CKSession *s)
+{
+	if(!s || !s->started)
+		return CHIAKI_ERR_UNINITIALIZED;
+	return (int)chiaki_session_keyboard_accept(&s->session);
+}
+
+int ck_session_keyboard_reject(CKSession *s)
+{
+	if(!s || !s->started)
+		return CHIAKI_ERR_UNINITIALIZED;
+	return (int)chiaki_session_keyboard_reject(&s->session);
 }
 
 // Controller ---------------------------------------------------------------
