@@ -108,9 +108,31 @@ struct StreamSettings: Codable, Equatable {
 	var rumble: Bool = true
 	/// Use the controller's Select/View button as the DualSense touchpad click
 	var selectIsTouchpad: Bool = false
+	/// Keep a ProMotion screen at 120 Hz while streaming, so frames wait less for the next refresh
+	var highRefreshDisplay: Bool = true
 
 	/// HDR needs HEVC
 	var effectiveCodec: VideoCodecChoice { hdr ? .h265 : codec }
+
+	init() {}
+
+	/// Missing keys keep their defaults, so adding a setting doesn't reset the others
+	init(from decoder: Decoder) throws {
+		let c = try decoder.container(keyedBy: CodingKeys.self)
+		let d = StreamSettings()
+		resolution = try c.decodeIfPresent(StreamResolution.self, forKey: .resolution) ?? d.resolution
+		fps = try c.decodeIfPresent(Int.self, forKey: .fps) ?? d.fps
+		bitrateMbps = try c.decodeIfPresent(Int.self, forKey: .bitrateMbps) ?? d.bitrateMbps
+		codec = try c.decodeIfPresent(VideoCodecChoice.self, forKey: .codec) ?? d.codec
+		hdr = try c.decodeIfPresent(Bool.self, forKey: .hdr) ?? d.hdr
+		displayMode = try c.decodeIfPresent(DisplayMode.self, forKey: .displayMode) ?? d.displayMode
+		sharpUpscaling = try c.decodeIfPresent(Bool.self, forKey: .sharpUpscaling) ?? d.sharpUpscaling
+		showStats = try c.decodeIfPresent(Bool.self, forKey: .showStats) ?? d.showStats
+		phoneMotion = try c.decodeIfPresent(Bool.self, forKey: .phoneMotion) ?? d.phoneMotion
+		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
+		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
+		highRefreshDisplay = try c.decodeIfPresent(Bool.self, forKey: .highRefreshDisplay) ?? d.highRefreshDisplay
+	}
 }
 
 @Observable

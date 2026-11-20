@@ -79,6 +79,7 @@ struct StreamView: View {
 			if let session, let renderer = session.renderer {
 				MetalStreamView(
 					renderer: renderer,
+					highRefresh: session.settings.highRefreshDisplay,
 					onTouch: { [weak session] in session?.screenTouch($0) },
 					onTap: { [weak session] in session?.screenTap(slot: $0) },
 					onCornerTap: revealMenuButton,
@@ -497,6 +498,7 @@ private struct StatsOverlay: View {
 			Text(String(format: "%.1f Mbps (asked %d)", stats.bitrateMbps, settings.bitrateMbps))
 			Text("\(settings.effectiveCodec == .h265 ? "HEVC" : "H.264")\(settings.hdr ? " HDR" : "")  decode \(String(format: "%.1f", stats.decodeMs)) ms")
 			Text(String(format: "ping %.0f ms  loss %.1f%%", stats.rttMs, stats.packetLoss * 100))
+			if stats.displayHz > 0 { Text("display \(Int(stats.displayHz)) Hz") }
 			Text("lost \(stats.lostFrames)  failed \(stats.failedFrames)")
 			if let controller = stats.controller { Text(controller) }
 		}
@@ -549,6 +551,7 @@ private struct KeyboardOverlay: View {
 /// Hosts the CAMetalLayer-backed view in SwiftUI.
 private struct MetalStreamView: UIViewRepresentable {
 	let renderer: MetalRenderer
+	let highRefresh: Bool
 	let onTouch: (ControllerInput.TouchEvent) -> Void
 	let onTap: (Int) -> Void
 	let onCornerTap: () -> Void
@@ -561,6 +564,7 @@ private struct MetalStreamView: UIViewRepresentable {
 	}
 
 	func updateUIView(_ uiView: StreamMetalView, context: Context) {
+		uiView.highRefresh = highRefresh
 		uiView.onTouch = onTouch
 		uiView.onTap = onTap
 		uiView.onCornerTap = onCornerTap

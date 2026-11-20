@@ -37,11 +37,14 @@ struct StreamSettingsForm: View {
 				ForEach(DisplayMode.allCases) { Text($0.label).tag($0) }
 			}
 			Toggle("Sharp upscaling", isOn: $settings.sharpUpscaling)
+			if UIScreen.main.maximumFramesPerSecond > 60 {
+				Toggle("120 Hz screen", isOn: $settings.highRefreshDisplay)
+			}
 			Toggle("Show stats", isOn: $settings.showStats)
 		} header: {
 			Text("Display")
 		} footer: {
-			Text("Fit shows the whole picture, with black bars where the screen is a different shape to 16:9. Zoom fills the screen and crops the overflow.")
+			Text("Fit shows the whole picture, with black bars where the screen is a different shape to 16:9. Zoom fills the screen and crops the overflow. 120 Hz screen gets each frame on screen sooner, for a little more battery.")
 		}
 
 		Section {

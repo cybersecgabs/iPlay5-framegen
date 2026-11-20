@@ -17,6 +17,8 @@ struct StreamStats: Equatable {
 	var lostFrames = 0
 	var hdrFrames = false
 	var controller: String?
+	/// The screen's refresh rate, 0 if unknown
+	var displayHz: Double = 0
 }
 
 /// One Remote Play connection: chiaki session + decoder + renderer + audio + input.
@@ -421,6 +423,7 @@ final class StreamSession {
 		s.lostFrames = Int(lostFrames)
 		s.hdrFrames = settings.hdr
 		s.controller = input.controllerName
+		s.displayHz = renderer?.displayHz ?? 0
 		stats = s
 	}
 }

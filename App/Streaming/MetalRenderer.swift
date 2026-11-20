@@ -38,6 +38,8 @@ final class MetalRenderer {
 
 	/// Frames presented (stats)
 	private(set) var presentedFrames = 0
+	/// The screen's current refresh rate, from the display link (stats)
+	var displayHz: Double = 0
 
 	init?() {
 		guard let device = MTLCreateSystemDefaultDevice(),
@@ -245,6 +247,12 @@ final class StreamMetalView: UIView {
 	}
 	private var tracked: [ObjectIdentifier: Tracked] = [:]
 
+	/// Ask a ProMotion screen for 120 Hz while this view is on screen
+	var highRefresh = true {
+		didSet { if highRefresh != oldValue { updateDisplayLink() } }
+	}
+	private var displayLink: CADisplayLink?
+
 	init(renderer: MetalRenderer) {
 		self.renderer = renderer
 		super.init(frame: .zero)
@@ -255,6 +263,35 @@ final class StreamMetalView: UIView {
 
 	@available(*, unavailable)
 	required init?(coder: NSCoder) { fatalError() }
+
+	// MARK: Refresh rate
+
+	override func didMoveToWindow() {
+		super.didMoveToWindow()
+		updateDisplayLink()
+	}
+
+	/// Frames are still drawn as soon as they're decoded. The display link only
+	/// keeps the panel refreshing at 120 Hz, so a new frame waits at most ~8 ms
+	/// for the next refresh instead of ~17 ms. It also measures the real rate.
+	private func updateDisplayLink() {
+		displayLink?.invalidate()
+		displayLink = nil
+		renderer.displayHz = 0
+		guard let window, highRefresh else { return }
+		let maxFPS = Float(window.screen.maximumFramesPerSecond)
+		guard maxFPS > 60 else { return }
+		let link = CADisplayLink(target: self, selector: #selector(displayTick))
+		link.preferredFrameRateRange = CAFrameRateRange(minimum: min(80, maxFPS), maximum: maxFPS, preferred: maxFPS)
+		link.add(to: .main, forMode: .common)
+		displayLink = link
+		log.notice("Requesting \(Int(maxFPS)) Hz while streaming")
+	}
+
+	@objc private func displayTick(_ link: CADisplayLink) {
+		let frame = link.targetTimestamp - link.timestamp
+		if frame > 0 { renderer.displayHz = (1 / frame).rounded() }
+	}
 
 	override func layoutSubviews() {
 		super.layoutSubviews()
