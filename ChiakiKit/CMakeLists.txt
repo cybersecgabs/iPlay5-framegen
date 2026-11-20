@@ -1,15 +1,18 @@
 # iOS build of chiaki-ng's core library (local-network play only).
 #
-# Builds chiaki-ng lib + jerasure/gf-complete + nanopb + mbedtls 2.28 + opus as
+# Builds chiaki-ng lib + jerasure/gf-complete + nanopb + mbedtls 3.6 LTS + opus as
 # static libraries for one Apple platform slice. scripts/build-chiaki.sh merges
 # the slices into ChiakiKit.xcframework.
 #
 # Differences from upstream lib/CMakeLists.txt:
-# - mbedtls instead of OpenSSL (upstream's Switch code path).
+# - mbedtls instead of OpenSSL (upstream's Switch code path). chiaki's mbedtls
+#   code targets 2.x, so shim/mbedtls_compat.h is force-included to build it
+#   against 3.6 without patching the submodule.
 # - PSN internet play (remote/holepunch.c, aia*.c) is replaced by stubs, which
 #   removes curl, libevent, json-c and miniupnpc.
 # - takion.pb.{c,h} are pre-generated in generated/ so protoc/python are not
-#   needed at build time. Regenerate with scripts/gen-proto.sh when bumping chiaki-ng.
+#   needed at build time. Regenerate them with nanopb's generator from
+#   vendor/chiaki-ng/lib/protobuf/takion.proto if a chiaki-ng bump changes it.
 
 cmake_minimum_required(VERSION 3.20)
 project(ChiakiKit C)
@@ -22,12 +25,14 @@ get_filename_component(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(CHIAKI_DIR "${ROOT}/vendor/chiaki-ng")
 set(TP "${CHIAKI_DIR}/third-party")
 
-# ---------------------------------------------------------------- mbedtls 2.28
+# ------------------------------------------------------------- mbedtls 3.6 LTS
 set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
 set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
 set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+# Applies to mbedtls and chiaki (added later in this directory), so both agree on struct layouts
+add_compile_definitions("MBEDTLS_USER_CONFIG_FILE=\"${CMAKE_CURRENT_SOURCE_DIR}/shim/mbedtls_user_config.h\"")
 add_subdirectory("${ROOT}/vendor/mbedtls" mbedtls EXCLUDE_FROM_ALL)
 
 # ------------------------------------------------------------------------ opus
@@ -100,7 +105,8 @@ target_compile_definitions(chiaki PUBLIC
 	CHIAKI_LIB_ENABLE_MBEDTLS
 	CHIAKI_VERSION_MAJOR=1 CHIAKI_VERSION_MINOR=10 CHIAKI_VERSION_PATCH=1
 	CHIAKI_VERSION="1.10.1")
-target_compile_options(chiaki PRIVATE -Wall -Wno-unused-function -Wno-unused-variable)
+target_compile_options(chiaki PRIVATE -Wall -Wno-unused-function -Wno-unused-variable
+	-include "${CMAKE_CURRENT_SOURCE_DIR}/shim/mbedtls_compat.h")
 target_link_libraries(chiaki PUBLIC mbedtls mbedx509 mbedcrypto opus nanopb jerasure)
 
 add_custom_target(chiakikit_all ALL DEPENDS chiaki mbedtls mbedx509 mbedcrypto opus nanopb jerasure gf_complete)

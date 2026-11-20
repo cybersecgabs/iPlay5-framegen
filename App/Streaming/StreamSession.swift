@@ -90,8 +90,8 @@ final class StreamSession {
 		config.enable_dualsense = true
 		config.packet_loss_max = 0.05
 		config.verbose_log = false
-		withUnsafeMutableBytes(of: &config.regist_key) { console.registKey.prefix(16).copyBytes(to: $0) }
-		withUnsafeMutableBytes(of: &config.rp_key) { console.rpKey.prefix(16).copyBytes(to: $0) }
+		withUnsafeMutableBytes(of: &config.regist_key) { _ = console.registKey.prefix(16).copyBytes(to: $0) }
+		withUnsafeMutableBytes(of: &config.rp_key) { _ = console.rpKey.prefix(16).copyBytes(to: $0) }
 
 		let ref = Unmanaged.passRetained(self)
 		selfRef = ref
