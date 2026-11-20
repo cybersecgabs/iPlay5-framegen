@@ -4,6 +4,7 @@
 // and set your own Apple team ID and a bundle ID you own.
 
 DEVELOPMENT_TEAM =
-IPLAY5_BUNDLE_ID = com.example.iplay5
+// Release IPAs use this, and it must match bundleIdentifier in altstore-source.json
+IPLAY5_BUNDLE_ID = io.github.reefbarman.iplay5
 
 #include? "Local.xcconfig"

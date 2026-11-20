@@ -17,16 +17,7 @@
       "tintColor": "#2A62E8",
       "category": "entertainment",
       "screenshots": [],
-      "versions": [
-        {
-          "version": "0.1.0",
-          "date": "2026-11-20T02:50:16Z",
-          "downloadURL": "https://github.com/reefbarman/iPlay5/releases/download/v0.1.0/iPlay5.ipa",
-          "size": 1836565,
-          "minOSVersion": "17.0",
-          "localizedDescription": "See the release notes on GitHub."
-        }
-      ],
+      "versions": [],
       "appPermissions": {
         "entitlements": [],
         "privacy": {
