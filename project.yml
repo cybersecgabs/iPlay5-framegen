@@ -78,7 +78,6 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGN_STYLE: Automatic
         ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
-        "SWIFT_INCLUDE_PATHS[sdk=iphonesimulator*]": "$(inherited) $(PROJECT_DIR)/Frameworks/ChiakiKit.xcframework/ios-arm64-simulator/Headers"
-        "SWIFT_INCLUDE_PATHS[sdk=iphoneos*]": "$(inherited) $(PROJECT_DIR)/Frameworks/ChiakiKit.xcframework/ios-arm64/Headers"
-        "HEADER_SEARCH_PATHS[sdk=iphonesimulator*]": "$(inherited) $(PROJECT_DIR)/Frameworks/ChiakiKit.xcframework/ios-arm64-simulator/Headers"
-        "HEADER_SEARCH_PATHS[sdk=iphoneos*]": "$(inherited) $(PROJECT_DIR)/Frameworks/ChiakiKit.xcframework/ios-arm64/Headers"
+        # No explicit ChiakiKit header/include paths here: Xcode already copies the
+        # xcframework's Headers (with module.modulemap) into $(BUILT_PRODUCTS_DIR)/include,
+        # and a second path to the same modulemap causes "redefinition of module 'ChiakiKit'".
