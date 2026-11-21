@@ -11,7 +11,7 @@ cd "$ROOT"
 
 VERSION="${VERSION:-0.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
-BUNDLE_ID="${BUNDLE_ID:-io.github.reefbarman.iplay5}"
+BUNDLE_ID="${BUNDLE_ID:-io.github.iplay5.framegen}"
 DERIVED="$ROOT/build/DerivedData-ipa"
 STAGE="$ROOT/build/ipa"
 OUT="$ROOT/build/iPlay5.ipa"

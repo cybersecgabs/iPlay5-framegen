@@ -1,21 +1,32 @@
 import ChiakiKit
 import Foundation
 import Observation
+import QuartzCore
 import UIKit
 
 struct StreamStats: Equatable {
 	var fps: Double = 0
+	var presentedFps: Double = 0
+	var generatedFps: Double = 0
 	var bitrateMbps: Double = 0
 	var width: Int32 = 0
 	var height: Int32 = 0
+	var outputWidth: Int = 0
+	var outputHeight: Int = 0
 	var decodeMs: Double = 0
+	var frameGenMs: Double = 0
+	var upscaleMs: Double = 0
 	/// Round trip measured while connecting
 	var rttMs: Double = 0
 	/// Packets lost recently, 0...1
 	var packetLoss: Double = 0
 	var failedFrames = 0
 	var lostFrames = 0
+	var skippedDuplicates = 0
 	var hdrFrames = false
+	var activeFrameGen: String = "Off"
+	var activeUpscaler: String = "Off"
+	var enhancerError: String?
 	var controller: String?
 	/// The screen's refresh rate, 0 if unknown
 	var displayHz: Double = 0
@@ -50,10 +61,13 @@ final class StreamSession {
 	@ObservationIgnored let input = ControllerInput()
 	@ObservationIgnored private let audio = AudioOutput()
 	@ObservationIgnored private var decoder: VideoDecoder?
+	@ObservationIgnored private var enhancer: VideoEnhancer?
 	@ObservationIgnored private var handle: OpaquePointer?
 	@ObservationIgnored private var selfRef: Unmanaged<StreamSession>?
 	@ObservationIgnored private var statsTimer: Timer?
 	@ObservationIgnored private var lastDecoded = 0
+	@ObservationIgnored private var lastPresented = 0
+	@ObservationIgnored private var lastGenerated = 0
 	@ObservationIgnored private var lostFrames: Int32 = 0
 	@ObservationIgnored private var touchIDs: [Int: Int32] = [:]
 	/// Latest controller state, so screen taps can add a touchpad click on top of it
@@ -61,6 +75,7 @@ final class StreamSession {
 	@ObservationIgnored private var extraButtons: UInt32 = 0
 	@ObservationIgnored private var reconnectAttempt = 0
 	@ObservationIgnored private var reconnectWork: DispatchWorkItem?
+	@ObservationIgnored private var sessionGeneration = 0
 
 	init(console: Console, settings: StreamSettings) {
 		self.console = console
@@ -81,15 +96,31 @@ final class StreamSession {
 			return
 		}
 		if case .reconnecting = state {} else { state = .connecting }
+		sessionGeneration &+= 1
+		let generation = sessionGeneration
 		keyboardText = nil
 		lostFrames = 0
 		lastDecoded = 0
+		lastPresented = 0
+		lastGenerated = 0
+
+		let enhancer = VideoEnhancer(device: renderer.device)
+		enhancer.configure(
+			upscalingMode: settings.upscalingMode,
+			frameGenMode: settings.frameGenMode,
+			deduplicateFrames: settings.deduplicateFrames,
+			vtScaleFactor: settings.vtScaleFactor,
+			nominalSourceFPS: settings.fps
+		)
+		enhancer.onImmediateFrame = { [weak renderer] frame in renderer?.display(frame) }
+		enhancer.setPaused(paused)
+		self.enhancer = enhancer
 
 		let codec = settings.effectiveCodec
 		let decoder = VideoDecoder(hevc: codec == .h265, tenBit: settings.hdr)
-		decoder.onFrame = { [weak renderer] frame in renderer?.display(frame) }
+		decoder.onFrame = { [weak enhancer] frame in enhancer?.submit(frame, arrivalTime: CACurrentMediaTime()) }
 		self.decoder = decoder
-		renderer.configure(hdr: settings.hdr, displayMode: settings.displayMode, bicubic: settings.sharpUpscaling)
+		renderer.configure(hdr: settings.hdr, displayMode: settings.displayMode, upscalingMode: settings.upscalingMode)
 		renderer.setPaused(paused)
 
 		var config = CKSessionConfig()
@@ -121,7 +152,10 @@ final class StreamSession {
 			guard let user else { return }
 			let session = Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue()
 			let text = message.map { String(cString: $0) }
-			DispatchQueue.main.async { session.handleEvent(type, code: code, message: text) }
+			DispatchQueue.main.async {
+				guard session.sessionGeneration == generation else { return }
+				session.handleEvent(type, code: code, message: text)
+			}
 		}
 		callbacks.on_rumble = { user, left, right in
 			guard let user else { return }
@@ -133,6 +167,7 @@ final class StreamSession {
 			let right = Array(UnsafeBufferPointer(start: r, count: 10))
 			let session = Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue()
 			DispatchQueue.main.async {
+				guard session.sessionGeneration == generation else { return }
 				session.input.applyTriggerEffect(typeLeft: tl, left: left, typeRight: tr, right: right)
 			}
 		}
@@ -214,6 +249,7 @@ final class StreamSession {
 	}
 
 	/// Applies new settings. Codec/resolution/bitrate/HDR changes need a reconnect.
+	/// Frame Gen and Upscaling apply live without interrupting the stream.
 	func apply(_ new: StreamSettings) {
 		let needsReconnect =
 			new.resolution != settings.resolution || new.fps != settings.fps || new.bitrateMbps != settings.bitrateMbps
@@ -226,13 +262,27 @@ final class StreamSession {
 			teardown()
 			start()
 		} else {
-			renderer?.configure(hdr: new.hdr, displayMode: new.displayMode, bicubic: new.sharpUpscaling)
+			renderer?.configure(hdr: new.hdr, displayMode: new.displayMode, upscalingMode: new.upscalingMode)
+			enhancer?.configure(
+				upscalingMode: new.upscalingMode,
+				frameGenMode: new.frameGenMode,
+				deduplicateFrames: new.deduplicateFrames,
+				vtScaleFactor: new.vtScaleFactor,
+				nominalSourceFPS: new.fps
+			)
 		}
+	}
+
+	func handleDisplayTick(targetTimestamp: Double, vsyncInterval: Double) {
+		guard settings.frameGenMode != .off, !paused else { return }
+		guard let pb = enhancer?.popPacedFrame(forDisplayTimestamp: targetTimestamp, vsyncInterval: vsyncInterval) else { return }
+		renderer?.display(pb)
 	}
 
 	func setPaused(_ paused: Bool) {
 		guard paused != self.paused else { return }
 		self.paused = paused
+		enhancer?.setPaused(paused)
 		renderer?.setPaused(paused)
 		audio.muted = paused
 		if !paused, let handle {
@@ -273,6 +323,7 @@ final class StreamSession {
 	}
 
 	private func teardown() {
+		sessionGeneration &+= 1
 		statsTimer?.invalidate()
 		statsTimer = nil
 		input.stop()
@@ -284,6 +335,8 @@ final class StreamSession {
 		handle = nil
 		decoder?.invalidate()
 		decoder = nil
+		enhancer?.invalidate()
+		enhancer = nil
 		selfRef?.release()
 		selfRef = nil
 		UIApplication.shared.isIdleTimerDisabled = false
@@ -292,9 +345,16 @@ final class StreamSession {
 	// MARK: - Callbacks (chiaki threads)
 
 	private func handleVideo(_ buf: UnsafePointer<UInt8>, _ size: Int, _ lost: Int32) -> Bool {
-		if lost > 0 { lostFrames &+= lost }
+		if lost > 0 {
+			lostFrames &+= lost
+			enhancer?.markDiscontinuity()
+		}
 		guard let decoder else { return true }
-		return decoder.decode(buf, count: size)
+		let ok = decoder.decode(buf, count: size)
+		if !ok {
+			enhancer?.markDiscontinuity()
+		}
+		return ok
 	}
 
 	private func handleRumble(_ left: UInt8, _ right: UInt8) {
@@ -408,9 +468,16 @@ final class StreamSession {
 	private func updateStats() {
 		guard let decoder else { return }
 		let decoded = decoder.decodedFrames
+		let rSnap = renderer?.snapshot() ?? RendererSnapshot()
+		let eStats = enhancer?.currentStats(rendererUpscaler: rSnap.activeUpscaler, rendererFallback: rSnap.fallbackReason) ?? EnhancerStats()
+
 		var s = StreamStats()
 		s.fps = Double(decoded - lastDecoded)
 		lastDecoded = decoded
+		s.presentedFps = Double(max(0, rSnap.presentedFrames - lastPresented))
+		lastPresented = rSnap.presentedFrames
+		s.generatedFps = Double(max(0, eStats.generatedFrames - lastGenerated))
+		lastGenerated = eStats.generatedFrames
 		if let handle {
 			s.bitrateMbps = ck_session_measured_bitrate_mbps(handle)
 			s.rttMs = ck_session_rtt_ms(handle)
@@ -418,12 +485,20 @@ final class StreamSession {
 		}
 		s.width = decoder.dimensions.width
 		s.height = decoder.dimensions.height
+		s.outputWidth = rSnap.outputWidth
+		s.outputHeight = rSnap.outputHeight
 		s.decodeMs = decoder.lastDecodeMs
+		s.frameGenMs = eStats.frameGenMs
+		s.upscaleMs = eStats.upscaleMs
 		s.failedFrames = decoder.failedFrames
 		s.lostFrames = Int(lostFrames)
+		s.skippedDuplicates = eStats.skippedDuplicates
 		s.hdrFrames = settings.hdr
+		s.activeFrameGen = eStats.activeFrameGen
+		s.activeUpscaler = eStats.activeUpscaler
+		s.enhancerError = eStats.lastError
 		s.controller = input.controllerName
-		s.displayHz = renderer?.displayHz ?? 0
+		s.displayHz = rSnap.displayHz
 		stats = s
 	}
 }

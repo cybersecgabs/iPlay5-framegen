@@ -18,6 +18,10 @@ targets:
     dependencies:
       - framework: Frameworks/ChiakiKit.xcframework
         embed: false
+      - sdk: VideoToolbox.framework
+    scheme:
+      testTargets:
+        - iPlay5Tests
     # Signing team and bundle ID live in Config/Local.xcconfig (see Config/Signing.xcconfig)
     configFiles:
       Debug: Config/Signing.xcconfig
@@ -31,10 +35,11 @@ targets:
         INFOPLIST_FILE: App/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MTL_FAST_MATH: YES
+        "OTHER_LDFLAGS[sdk=iphoneos*]": "$(inherited) -framework MetalFX"
     info:
       path: App/Info.plist
       properties:
-        CFBundleDisplayName: iPlay5
+        CFBundleDisplayName: iPlay5 FG
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSRequiresIPhoneOS: true
@@ -57,3 +62,23 @@ targets:
         GCSupportedGameControllers:
           - ProfileName: ExtendedGamepad
           - ProfileName: DualSense
+  iPlay5Tests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    dependencies:
+      - target: iPlay5
+      - framework: Frameworks/ChiakiKit.xcframework
+        embed: false
+        link: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.iplay5.framegen.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: YES
+        "SWIFT_INCLUDE_PATHS[sdk=iphonesimulator*]": "$(inherited) $(PROJECT_DIR)/Frameworks/ChiakiKit.xcframework/ios-arm64-simulator/Headers"
+        "SWIFT_INCLUDE_PATHS[sdk=iphoneos*]": "$(inherited) $(PROJECT_DIR)/Frameworks/ChiakiKit.xcframework/ios-arm64/Headers"
+        "HEADER_SEARCH_PATHS[sdk=iphonesimulator*]": "$(inherited) $(PROJECT_DIR)/Frameworks/ChiakiKit.xcframework/ios-arm64-simulator/Headers"
+        "HEADER_SEARCH_PATHS[sdk=iphoneos*]": "$(inherited) $(PROJECT_DIR)/Frameworks/ChiakiKit.xcframework/ios-arm64/Headers"

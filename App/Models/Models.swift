@@ -94,6 +94,36 @@ enum DisplayMode: String, Codable, CaseIterable, Identifiable {
 	var label: String { self == .fit ? "Fit" : "Zoom to fill" }
 }
 
+enum UpscalingMode: String, Codable, CaseIterable, Identifiable {
+	case off
+	case bicubic
+	case metalFX
+	case vtSuperRes
+
+	var id: String { rawValue }
+	var label: String {
+		switch self {
+		case .off: "Off (Bilinear)"
+		case .bicubic: "Catmull-Rom (Shader)"
+		case .metalFX: "MetalFX Spatial (GPU)"
+		case .vtSuperRes: "Apple ML Super Res (iOS 26+)"
+		}
+	}
+}
+
+enum FrameGenMode: String, Codable, CaseIterable, Identifiable {
+	case off
+	case x2
+
+	var id: String { rawValue }
+	var label: String {
+		switch self {
+		case .off: "Off"
+		case .x2: "2x (30→60 / 60→120)"
+		}
+	}
+}
+
 struct StreamSettings: Codable, Equatable {
 	var resolution: StreamResolution = .p1080
 	var fps: Int = 60
@@ -102,6 +132,12 @@ struct StreamSettings: Codable, Equatable {
 	var hdr: Bool = false
 	var displayMode: DisplayMode = .fit
 	var sharpUpscaling: Bool = true
+	var upscalingMode: UpscalingMode = .metalFX
+	var frameGenMode: FrameGenMode = .off
+	/// Skip near-identical duplicate frames when running 2x frame gen on a 60 fps stream (for 30 fps games like GTA 6)
+	var deduplicateFrames: Bool = true
+	/// Preferred spatial scale factor for Apple ML Super Resolution (1.5x or 2.0x, matched dynamically to device support)
+	var vtScaleFactor: Double = 1.5
 	var showStats: Bool = false
 	/// Phone gyro for controllers without motion sensors (e.g. GameSir G8+)
 	var phoneMotion: Bool = true
@@ -127,11 +163,55 @@ struct StreamSettings: Codable, Equatable {
 		hdr = try c.decodeIfPresent(Bool.self, forKey: .hdr) ?? d.hdr
 		displayMode = try c.decodeIfPresent(DisplayMode.self, forKey: .displayMode) ?? d.displayMode
 		sharpUpscaling = try c.decodeIfPresent(Bool.self, forKey: .sharpUpscaling) ?? d.sharpUpscaling
+		if let decodedUpscaling = try c.decodeIfPresent(UpscalingMode.self, forKey: .upscalingMode) {
+			upscalingMode = decodedUpscaling
+		} else {
+			upscalingMode = sharpUpscaling ? d.upscalingMode : .off
+		}
+		frameGenMode = try c.decodeIfPresent(FrameGenMode.self, forKey: .frameGenMode) ?? d.frameGenMode
+		deduplicateFrames = try c.decodeIfPresent(Bool.self, forKey: .deduplicateFrames) ?? d.deduplicateFrames
+		vtScaleFactor = try c.decodeIfPresent(Double.self, forKey: .vtScaleFactor) ?? d.vtScaleFactor
 		showStats = try c.decodeIfPresent(Bool.self, forKey: .showStats) ?? d.showStats
 		phoneMotion = try c.decodeIfPresent(Bool.self, forKey: .phoneMotion) ?? d.phoneMotion
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
 		highRefreshDisplay = try c.decodeIfPresent(Bool.self, forKey: .highRefreshDisplay) ?? d.highRefreshDisplay
+	}
+
+	mutating func applyGTA6Preset() {
+		resolution = .p1080
+		fps = 30
+		bitrateMbps = 40
+		codec = .h265
+		frameGenMode = .x2
+		upscalingMode = .metalFX
+		sharpUpscaling = true
+		deduplicateFrames = true
+		highRefreshDisplay = true
+		showStats = true
+	}
+
+	mutating func applyProMotion120Preset() {
+		resolution = .p1080
+		fps = 60
+		bitrateMbps = 40
+		codec = .h265
+		frameGenMode = .x2
+		upscalingMode = .metalFX
+		sharpUpscaling = true
+		deduplicateFrames = true
+		highRefreshDisplay = true
+	}
+
+	mutating func applyLowLatencyPreset() {
+		resolution = .p1080
+		fps = 60
+		bitrateMbps = 30
+		codec = .h265
+		frameGenMode = .off
+		upscalingMode = .metalFX
+		sharpUpscaling = true
+		highRefreshDisplay = true
 	}
 }
 

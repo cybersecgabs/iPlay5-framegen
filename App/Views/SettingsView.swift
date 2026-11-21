@@ -6,6 +6,53 @@ struct StreamSettingsForm: View {
 
 	var body: some View {
 		Section {
+			Button {
+				settings.applyGTA6Preset()
+			} label: {
+				Label("GTA 6 (30→60 fps + MetalFX)", systemImage: "sparkles.tv")
+			}
+			Button {
+				settings.applyProMotion120Preset()
+			} label: {
+				Label("ProMotion (60→120 fps + MetalFX)", systemImage: "gauge.with.dots.needle.100percent")
+			}
+			Button {
+				settings.applyLowLatencyPreset()
+			} label: {
+				Label("Low Latency (60 fps + MetalFX)", systemImage: "bolt.fill")
+			}
+		} header: {
+			Text("Presets")
+		} footer: {
+			Text("GTA 6 preset streams 1080p30 HEVC at 40 Mbps and enables 2x VideoToolbox Frame Gen to output smooth 60 fps with MetalFX Spatial upscaling.")
+		}
+
+		Section {
+			Picker("Frame Generation", selection: $settings.frameGenMode) {
+				ForEach(FrameGenMode.allCases) { Text($0.label).tag($0) }
+			}
+			if settings.frameGenMode == .x2 && settings.fps >= 60 {
+				Toggle("Skip duplicate frames (30 fps games)", isOn: $settings.deduplicateFrames)
+			}
+			Picker("Upscaling", selection: $settings.upscalingMode) {
+				ForEach(UpscalingMode.allCases) { Text($0.label).tag($0) }
+			}
+			.onChange(of: settings.upscalingMode) { _, new in
+				settings.sharpUpscaling = new != .off
+			}
+			if settings.upscalingMode == .vtSuperRes {
+				Picker("ML Scale Factor", selection: $settings.vtScaleFactor) {
+					Text("1.5x").tag(1.5)
+					Text("2.0x").tag(2.0)
+				}
+			}
+		} header: {
+			Text("Frame Gen & Upscaling")
+		} footer: {
+			Text("Applies live without reconnecting. \(EnhancerCapabilities.current.shortStatus)")
+		}
+
+		Section {
 			Picker("Resolution", selection: $settings.resolution) {
 				ForEach(StreamResolution.allCases) { Text($0.label).tag($0) }
 			}
@@ -36,7 +83,6 @@ struct StreamSettingsForm: View {
 			Picker("Picture", selection: $settings.displayMode) {
 				ForEach(DisplayMode.allCases) { Text($0.label).tag($0) }
 			}
-			Toggle("Sharp upscaling", isOn: $settings.sharpUpscaling)
 			if UIScreen.main.maximumFramesPerSecond > 60 {
 				Toggle("120 Hz screen", isOn: $settings.highRefreshDisplay)
 			}
@@ -77,8 +123,8 @@ struct SettingsView: View {
 					) {
 						Label("Share diagnostics", systemImage: "ladybug")
 					}
-					Link(destination: URL(string: "https://github.com/reefbarman/iPlay5/issues/new")!) {
-						Label("Report a problem on GitHub", systemImage: "exclamationmark.bubble")
+					Link(destination: URL(string: "https://github.com/reefbarman/iPlay5")!) {
+						Label("Upstream iPlay5 on GitHub", systemImage: "link")
 					}
 				} header: {
 					Text("Help")

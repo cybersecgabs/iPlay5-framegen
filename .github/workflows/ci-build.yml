@@ -1,0 +1,90 @@
+name: Build and Validate IPA
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    name: Build, Test and Package Unsigned IPA
+    runs-on: macos-26
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show Xcode and SDK versions
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install build tools
+        run: |
+          brew install cmake ninja xcodegen
+          xcodebuild -showComponent MetalToolchain >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
+
+      - name: Compute vendor tree hash
+        id: vendor-hash
+        run: |
+          HASH=$(git ls-tree HEAD vendor | shasum -a 256 | awk '{print $1}')
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+
+      - name: Cache ChiakiKit.xcframework
+        uses: actions/cache@v4
+        id: chiaki-cache
+        with:
+          path: Frameworks/ChiakiKit.xcframework
+          key: chiakikit-${{ runner.os }}-${{ steps.vendor-hash.outputs.hash }}-${{ hashFiles('ChiakiKit/**', 'scripts/build-chiaki.sh') }}
+
+      - name: Build ChiakiKit.xcframework
+        if: steps.chiaki-cache.outputs.cache-hit != 'true'
+        run: |
+          chmod +x scripts/*.sh
+          scripts/build-chiaki.sh
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Run unit tests on iOS Simulator
+        run: |
+          SIM_ID=$(xcrun simctl list devices available iPhone | grep -E "iPhone (18|17|16|15)" | grep -E '\([0-9A-F-]{36}\)' | head -n 1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/' || true)
+          if [ -z "$SIM_ID" ]; then
+            SIM_ID=$(xcrun simctl list devices available iPhone | grep -E '\([0-9A-F-]{36}\)' | head -n 1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/' || true)
+          fi
+          if [ -z "$SIM_ID" ]; then
+            echo "ERROR: No available iPhone Simulator found" >&2
+            exit 1
+          fi
+          xcodebuild test \
+            -project iPlay5.xcodeproj \
+            -scheme iPlay5 \
+            -destination "platform=iOS Simulator,id=$SIM_ID" \
+            -only-testing:iPlay5Tests \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM=""
+
+      - name: Build unsigned Release IPA (iOS device)
+        run: |
+          chmod +x scripts/*.sh
+          VERSION="0.4.1" BUILD_NUMBER="${{ github.run_number }}" scripts/package-ipa.sh
+
+      - name: Verify IPA bundle
+        run: scripts/verify-ipa.sh build/iPlay5.ipa
+
+      - name: Upload unsigned IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPlay5-FrameGen-ipa
+          path: build/iPlay5.ipa
+          if-no-files-found: error

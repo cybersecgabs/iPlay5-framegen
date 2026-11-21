@@ -120,3 +120,60 @@ fragment float4 stream_fragment(VertexOut in [[stage_in]],
 
 	return float4(rgb, 1.0);
 }
+
+// Must match BlitUniforms in MetalRenderer.swift
+struct BlitUniforms {
+	float2 ndcScale;
+	float2 uvOrigin;
+	float2 uvSize;
+	int transferMode; // 0 = passthrough, 1 = SDR sRGB/BT.709 -> BT.2020 PQ
+};
+
+vertex VertexOut blit_vertex(uint vid [[vertex_id]], constant BlitUniforms &u [[buffer(0)]]) {
+	float2 corner = float2((vid & 1) ? 1.0 : -1.0, (vid & 2) ? -1.0 : 1.0);
+	float2 uv01 = float2((vid & 1) ? 1.0 : 0.0, (vid & 2) ? 1.0 : 0.0);
+	VertexOut out;
+	out.position = float4(corner * u.ndcScale, 0.0, 1.0);
+	out.uv = u.uvOrigin + uv01 * u.uvSize;
+	return out;
+}
+
+fragment float4 blit_fragment(VertexOut in [[stage_in]],
+                              texture2d<float> srcTex [[texture(0)]],
+                              constant BlitUniforms &u [[buffer(0)]]) {
+	constexpr sampler s(filter::linear, address::clamp_to_edge);
+	float3 rgb = saturate(srcTex.sample(s, in.uv).rgb);
+	if (u.transferMode == 1) {
+		float3 lin = pow(rgb, 2.4);
+		const float3x3 bt709_to_2020 = float3x3(float3(0.6274, 0.0691, 0.0164),
+		                                        float3(0.3293, 0.9195, 0.0880),
+		                                        float3(0.0433, 0.0114, 0.8956));
+		lin = bt709_to_2020 * lin;
+		rgb = linear_to_pq(lin * (203.0 / 10000.0));
+	}
+	return float4(rgb, 1.0);
+}
+
+// Computes mean normalized luma difference across a 16x9 interior grid (0...1)
+// to detect duplicated 30 fps frames inside a 60 fps Remote Play stream.
+kernel void luma_diff_grid(texture2d<float, access::sample> prevLuma [[texture(0)]],
+                           texture2d<float, access::sample> currLuma [[texture(1)]],
+                           device float *outDiff [[buffer(0)]],
+                           uint tid [[thread_position_in_grid]]) {
+	if (tid != 0) {
+		return;
+	}
+	constexpr sampler s(filter::linear, address::clamp_to_edge);
+	float sum = 0.0;
+	for (int gy = 0; gy < 9; ++gy) {
+		float v = mix(0.06, 0.94, (float(gy) + 0.5) / 9.0);
+		for (int gx = 0; gx < 16; ++gx) {
+			float u = mix(0.06, 0.94, (float(gx) + 0.5) / 16.0);
+			float2 uv = float2(u, v);
+			float p = prevLuma.sample(s, uv).r;
+			float c = currLuma.sample(s, uv).r;
+			sum += abs(p - c);
+		}
+	}
+	*outDiff = sum / 144.0;
+}

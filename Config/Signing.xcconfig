@@ -5,6 +5,6 @@
 
 DEVELOPMENT_TEAM =
 // Release IPAs use this, and it must match bundleIdentifier in altstore-source.json
-IPLAY5_BUNDLE_ID = io.github.reefbarman.iplay5
+IPLAY5_BUNDLE_ID = io.github.iplay5.framegen
 
 #include? "Local.xcconfig"

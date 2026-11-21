@@ -1,4 +1,4 @@
-# Push a tag like v0.2.0 to build an unsigned IPA, attach it to a GitHub
+# Push a tag like v0.4.1 to build an unsigned IPA, attach it to a GitHub
 # release and add it to the SideStore/AltStore source.
 name: Release
 
@@ -11,9 +11,9 @@ permissions:
 
 jobs:
   ipa:
-    runs-on: macos-latest
+    runs-on: macos-26
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
@@ -26,10 +26,35 @@ jobs:
         run: |
           brew install cmake ninja xcodegen
           # Newer Xcodes ship the Metal compiler as a separate download
-          xcodebuild -downloadComponent MetalToolchain || true
+          xcodebuild -showComponent MetalToolchain >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
 
-      - name: Build IPA
-        run: VERSION="${GITHUB_REF_NAME#v}" BUILD_NUMBER="${{ github.run_number }}" scripts/package-ipa.sh
+      - name: Build ChiakiKit.xcframework
+        run: |
+          chmod +x scripts/*.sh
+          scripts/build-chiaki.sh
+
+      - name: Generate Xcode project and run unit tests
+        run: |
+          xcodegen generate
+          SIM_ID=$(xcrun simctl list devices available iPhone | grep -E "iPhone (18|17|16|15)" | grep -E '\([0-9A-F-]{36}\)' | head -n 1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/' || true)
+          if [ -z "$SIM_ID" ]; then
+            SIM_ID=$(xcrun simctl list devices available iPhone | grep -E '\([0-9A-F-]{36}\)' | head -n 1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/' || true)
+          fi
+          if [ -z "$SIM_ID" ]; then
+            echo "ERROR: No available iPhone Simulator found" >&2
+            exit 1
+          fi
+          xcodebuild test \
+            -project iPlay5.xcodeproj \
+            -scheme iPlay5 \
+            -destination "platform=iOS Simulator,id=$SIM_ID" \
+            -only-testing:iPlay5Tests \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM=""
+
+      - name: Build and verify IPA
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}" BUILD_NUMBER="${{ github.run_number }}" scripts/package-ipa.sh
+          scripts/verify-ipa.sh build/iPlay5.ipa
 
       - name: Publish release
         env:
@@ -43,9 +68,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main
+          git checkout -- App/Info.plist || true
           git checkout -B main origin/main
           scripts/update-source.sh "${GITHUB_REF_NAME#v}" build/iPlay5.ipa \
             "https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/iPlay5.ipa"
           git add altstore-source.json
-          git commit -m "chore: add ${GITHUB_REF_NAME} to sideload source"
-          git push origin main
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: add ${GITHUB_REF_NAME} to sideload source"
+            git pull --rebase origin main
+            git push origin main
+          fi

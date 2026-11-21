@@ -28,6 +28,8 @@ struct StreamView: View {
 	@State private var showHeatWarning = false
 	/// The corner hints show once per stream screen, not again after a reconnect
 	@State private var hintShown = false
+	@State private var stopped = false
+	@State private var orientationUpdateWork: DispatchWorkItem?
 
 	private static var hasController: Bool {
 		GCController.controllers().contains { $0.extendedGamepad != nil }
@@ -46,12 +48,18 @@ struct StreamView: View {
 		.persistentSystemOverlays(.hidden)
 		.defersSystemGestures(on: .all)
 		// The session itself starts from updateFolded, once we know we're on a usable screen
-		.onAppear { AppDelegate.setStreaming(true) }
+		.onAppear {
+			stopped = false
+			AppDelegate.setStreaming(true)
+		}
 		.onDisappear(perform: stop)
 		.onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
 			// A flip between the two landscapes keeps the same window size, so pick
 			// up iOS's new orientation (for controller motion) once it has rotated
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { update() }
+			orientationUpdateWork?.cancel()
+			let work = DispatchWorkItem { update() }
+			orientationUpdateWork = work
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .GCControllerDidConnect)) { _ in
 			guard needsController, Self.hasController else { return }
@@ -64,7 +72,9 @@ struct StreamView: View {
 			flashSettingsHint()
 		}
 		.onChange(of: phone.isHot) { _, hot in
-			if hot, settingsStore.settings.fps > 30 { flashHeatWarning() }
+			if hot && (settingsStore.settings.fps > 30 || settingsStore.settings.frameGenMode != .off) {
+				flashHeatWarning()
+			}
 		}
 		.onChange(of: scenePhase) { _, phase in
 			session?.setPaused(phase != .active || folded || portrait)
@@ -80,10 +90,14 @@ struct StreamView: View {
 				MetalStreamView(
 					renderer: renderer,
 					highRefresh: session.settings.highRefreshDisplay,
+					frameGenActive: session.settings.frameGenMode != .off,
 					onTouch: { [weak session] in session?.screenTouch($0) },
 					onTap: { [weak session] in session?.screenTap(slot: $0) },
 					onCornerTap: revealMenuButton,
-					onLeftCornerTap: revealPSButton
+					onLeftCornerTap: revealPSButton,
+					onDisplayTick: { [weak session] target, vsync in
+						session?.handleDisplayTick(targetTimestamp: target, vsyncInterval: vsync)
+					}
 				)
 				.ignoresSafeArea()
 			}
@@ -149,6 +163,14 @@ struct StreamView: View {
 	}
 
 	private func stop() {
+		stopped = true
+		orientationUpdateWork?.cancel()
+		orientationUpdateWork = nil
+		hideMenuButton?.cancel()
+		hideMenuButton = nil
+		hidePSButton?.cancel()
+		hidePSButton = nil
+		windowSize = .zero
 		session?.stop()
 		session = nil
 		AppDelegate.setStreaming(false)
@@ -158,13 +180,14 @@ struct StreamView: View {
 	/// unfold before connecting, and pause if it's folded mid-session.
 	/// Normal iPhones are never "folded".
 	private func updateFolded(_ size: CGSize) {
-		guard size.width > 0, size.height > 0 else { return }
+		guard !stopped, size.width > 0, size.height > 0 else { return }
 		AppDelegate.windowSizeChanged(size)
 		windowSize = size
 		update()
 	}
 
 	private func update() {
+		guard !stopped else { return }
 		let size = windowSize
 		guard size.width > 0, size.height > 0 else { return }
 		let isFolded = DeviceLayout.isFolded(size) && !playHereAnyway
@@ -275,7 +298,7 @@ struct StreamView: View {
 	private var heatWarning: some View {
 		HStack(spacing: 8) {
 			Image(systemName: "thermometer.high")
-			Text("Your phone is getting hot. Switching to 30 fps in settings will help it cool down.")
+			Text("Your phone is getting hot. Turning off Frame Gen or switching to 30 fps in settings will help it cool down.")
 		}
 		.font(.subheadline.weight(.semibold))
 		.foregroundStyle(.white)
@@ -473,6 +496,9 @@ struct StreamView: View {
 					} label: {
 						Label("Temperature", systemImage: "thermometer.medium")
 					}
+					if phone.isHot && store.settings.frameGenMode != .off {
+						Button("Disable Frame Gen to cool down") { store.settings.frameGenMode = .off }
+					}
 					if phone.isHot && store.settings.fps > 30 {
 						Button("Switch to 30 fps to cool down") { store.settings.fps = 30 }
 					}
@@ -494,13 +520,26 @@ private struct StatsOverlay: View {
 
 	var body: some View {
 		VStack(alignment: .leading, spacing: 2) {
-			Text("\(stats.width)×\(stats.height) @ \(Int(stats.fps)) fps")
+			if stats.outputWidth > 0 && stats.outputHeight > 0 {
+				Text("\(stats.width)×\(stats.height) → \(stats.outputWidth)×\(stats.outputHeight)")
+			} else {
+				Text("\(stats.width)×\(stats.height)")
+			}
+			Text("in \(Int(stats.fps)) fps → out \(Int(stats.presentedFps)) fps (gen \(Int(stats.generatedFps)))")
 			Text(String(format: "%.1f Mbps (asked %d)", stats.bitrateMbps, settings.bitrateMbps))
 			Text("\(settings.effectiveCodec == .h265 ? "HEVC" : "H.264")\(settings.hdr ? " HDR" : "")  decode \(String(format: "%.1f", stats.decodeMs)) ms")
+			Text("FG: \(stats.activeFrameGen)\(stats.frameGenMs > 0 ? String(format: " (%.1f ms)", stats.frameGenMs) : "")")
+			Text("Up: \(stats.activeUpscaler)\(stats.upscaleMs > 0 ? String(format: " (%.1f ms)", stats.upscaleMs) : "")")
+			if stats.skippedDuplicates > 0 {
+				Text("dup skipped \(stats.skippedDuplicates)")
+			}
 			Text(String(format: "ping %.0f ms  loss %.1f%%", stats.rttMs, stats.packetLoss * 100))
 			if stats.displayHz > 0 { Text("display \(Int(stats.displayHz)) Hz") }
 			Text("lost \(stats.lostFrames)  failed \(stats.failedFrames)")
 			if let controller = stats.controller { Text(controller) }
+			if let err = stats.enhancerError {
+				Text(err).foregroundStyle(.orange)
+			}
 		}
 		.font(.caption2.monospaced())
 		.padding(8)
@@ -552,10 +591,12 @@ private struct KeyboardOverlay: View {
 private struct MetalStreamView: UIViewRepresentable {
 	let renderer: MetalRenderer
 	let highRefresh: Bool
+	let frameGenActive: Bool
 	let onTouch: (ControllerInput.TouchEvent) -> Void
 	let onTap: (Int) -> Void
 	let onCornerTap: () -> Void
 	let onLeftCornerTap: () -> Void
+	let onDisplayTick: (Double, Double) -> Void
 
 	func makeUIView(context: Context) -> StreamMetalView {
 		let view = StreamMetalView(renderer: renderer)
@@ -565,9 +606,15 @@ private struct MetalStreamView: UIViewRepresentable {
 
 	func updateUIView(_ uiView: StreamMetalView, context: Context) {
 		uiView.highRefresh = highRefresh
+		uiView.frameGenActive = frameGenActive
 		uiView.onTouch = onTouch
 		uiView.onTap = onTap
 		uiView.onCornerTap = onCornerTap
 		uiView.onLeftCornerTap = onLeftCornerTap
+		uiView.onDisplayTick = onDisplayTick
+	}
+
+	static func dismantleUIView(_ uiView: StreamMetalView, coordinator: ()) {
+		uiView.stopDisplayLink()
 	}
 }

@@ -51,6 +51,8 @@ struct DiagnosticsReport: Transferable {
 		Consoles: \(consoleCount)
 		Thermal state: \(ProcessInfo.processInfo.thermalState.rawValue), Low Power Mode: \(ProcessInfo.processInfo.isLowPowerModeEnabled)
 		Settings: \(settingsJSON)
+		Capabilities:
+		\(EnhancerCapabilities.current.summaryText)
 		"""
 	}
 
