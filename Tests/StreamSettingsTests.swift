@@ -58,7 +58,14 @@ final class StreamSettingsTests: XCTestCase {
 		XCTAssertEqual(gta6.upscalingMode, .metalFX)
 		XCTAssertTrue(gta6.deduplicateFrames)
 		XCTAssertTrue(gta6.highRefreshDisplay)
+		XCTAssertFalse(gta6.showStats)
+
+		// Applying GTA 6 preset preserves user's debug overlay and color preferences
+		gta6.showStats = true
+		gta6.colorAdjustments = .vividOLED
+		gta6.applyGTA6Preset()
 		XCTAssertTrue(gta6.showStats)
+		XCTAssertEqual(gta6.colorAdjustments, .vividOLED)
 
 		var promo = StreamSettings()
 		promo.applyProMotion120Preset()
@@ -72,5 +79,33 @@ final class StreamSettingsTests: XCTestCase {
 		XCTAssertEqual(lowLat.fps, 60)
 		XCTAssertEqual(lowLat.frameGenMode, .off)
 		XCTAssertEqual(lowLat.upscalingMode, .metalFX)
+	}
+
+	func testColorAdjustmentsNeutralClampingAndCodable() throws {
+		XCTAssertTrue(ColorAdjustments.neutral.isNeutral)
+		XCTAssertFalse(ColorAdjustments.vividOLED.isNeutral)
+
+		let tooHigh = ColorAdjustments(brightness: 1.0, contrast: 3.0, saturation: 5.0, gamma: 3.0).clamped
+		XCTAssertEqual(tooHigh.brightness, 0.30, accuracy: 0.0001)
+		XCTAssertEqual(tooHigh.contrast, 1.50, accuracy: 0.0001)
+		XCTAssertEqual(tooHigh.saturation, 2.00, accuracy: 0.0001)
+		XCTAssertEqual(tooHigh.gamma, 1.50, accuracy: 0.0001)
+
+		let tooLow = ColorAdjustments(brightness: -1.0, contrast: 0.1, saturation: -0.5, gamma: 0.2).clamped
+		XCTAssertEqual(tooLow.brightness, -0.30, accuracy: 0.0001)
+		XCTAssertEqual(tooLow.contrast, 0.50, accuracy: 0.0001)
+		XCTAssertEqual(tooLow.saturation, 0.0, accuracy: 0.0001)
+		XCTAssertEqual(tooLow.gamma, 0.70, accuracy: 0.0001)
+
+		var settings = StreamSettings()
+		settings.colorAdjustments = ColorAdjustments(brightness: 0.08, contrast: 1.15, saturation: 1.25, gamma: 1.05)
+		let data = try JSONEncoder().encode(settings)
+		let decoded = try JSONDecoder().decode(StreamSettings.self, from: data)
+		XCTAssertEqual(decoded.colorAdjustments, settings.colorAdjustments)
+
+		let legacyData = #"{"fps":60,"showStats":false}"#.data(using: .utf8)!
+		let legacyDecoded = try JSONDecoder().decode(StreamSettings.self, from: legacyData)
+		XCTAssertEqual(legacyDecoded.colorAdjustments, .neutral)
+		XCTAssertTrue(legacyDecoded.colorAdjustments.isNeutral)
 	}
 }

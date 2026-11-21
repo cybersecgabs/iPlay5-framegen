@@ -11,6 +11,12 @@ struct RenderUniforms {
 	int transferMode;  // 0 = passthrough, 1 = SDR on PQ target, 2 = PQ on SDR target
 	int bicubic;       // Catmull-Rom luma upscaling
 	int fullRange;
+	float brightness;
+	float contrast;
+	float saturation;
+	float gamma;
+	int colorAdjust;   // 0 = bypass, 1 = apply color adjustments
+	int _pad;
 };
 
 struct VertexOut {
@@ -74,6 +80,25 @@ static float3 linear_to_pq(float3 l) { // l in nits / 10000
 	return pow((PQ_C1 + PQ_C2 * p) / (1.0 + PQ_C3 * p), PQ_M2);
 }
 
+static float3 apply_color_adjustments(float3 rgb,
+                                      float brightness,
+                                      float contrast,
+                                      float saturation,
+                                      float gamma,
+                                      int bt2020) {
+	if (abs(gamma - 1.0) > 0.001) {
+		rgb = pow(max(rgb, float3(0.0)), float3(1.0 / max(gamma, 0.1)));
+	}
+	rgb = saturate((rgb - 0.5) * contrast + 0.5 + brightness);
+	if (abs(saturation - 1.0) > 0.001) {
+		float3 weights = bt2020 ? float3(0.2627, 0.6780, 0.0593)
+		                        : float3(0.2126, 0.7152, 0.0722);
+		float luma = dot(rgb, weights);
+		rgb = saturate(mix(float3(luma), rgb, saturation));
+	}
+	return rgb;
+}
+
 fragment float4 stream_fragment(VertexOut in [[stage_in]],
                                 texture2d<float> lumaTex [[texture(0)]],
                                 texture2d<float> chromaTex [[texture(1)]],
@@ -103,6 +128,9 @@ fragment float4 stream_fragment(VertexOut in [[stage_in]],
 	rgb = saturate(rgb);
 
 	if (u.transferMode == 1) {
+		if (u.colorAdjust != 0) {
+			rgb = apply_color_adjustments(rgb, u.brightness, u.contrast, u.saturation, u.gamma, 0);
+		}
 		// SDR frame on an HDR (PQ) layer: BT.709 gamma -> linear -> BT.2020 -> PQ at 203 nits reference white
 		float3 lin = pow(rgb, 2.4);
 		const float3x3 bt709_to_2020 = float3x3(float3(0.6274, 0.0691, 0.0164),
@@ -116,6 +144,11 @@ fragment float4 stream_fragment(VertexOut in [[stage_in]],
 		float3 v = nits / 203.0;
 		v = v / (1.0 + v * 0.25);
 		rgb = pow(saturate(v), 1.0 / 2.4);
+		if (u.colorAdjust != 0) {
+			rgb = apply_color_adjustments(rgb, u.brightness, u.contrast, u.saturation, u.gamma, 0);
+		}
+	} else if (u.colorAdjust != 0) {
+		rgb = apply_color_adjustments(rgb, u.brightness, u.contrast, u.saturation, u.gamma, u.matrix);
 	}
 
 	return float4(rgb, 1.0);
@@ -127,6 +160,13 @@ struct BlitUniforms {
 	float2 uvOrigin;
 	float2 uvSize;
 	int transferMode; // 0 = passthrough, 1 = SDR sRGB/BT.709 -> BT.2020 PQ
+	int colorAdjust;  // 0 = bypass, 1 = apply color adjustments
+	float brightness;
+	float contrast;
+	float saturation;
+	float gamma;
+	int bt2020;       // 0 = BT.709, 1 = BT.2020
+	int _pad;
 };
 
 vertex VertexOut blit_vertex(uint vid [[vertex_id]], constant BlitUniforms &u [[buffer(0)]]) {
@@ -143,6 +183,9 @@ fragment float4 blit_fragment(VertexOut in [[stage_in]],
                               constant BlitUniforms &u [[buffer(0)]]) {
 	constexpr sampler s(filter::linear, address::clamp_to_edge);
 	float3 rgb = saturate(srcTex.sample(s, in.uv).rgb);
+	if (u.colorAdjust != 0) {
+		rgb = apply_color_adjustments(rgb, u.brightness, u.contrast, u.saturation, u.gamma, u.transferMode == 1 ? 0 : u.bt2020);
+	}
 	if (u.transferMode == 1) {
 		float3 lin = pow(rgb, 2.4);
 		const float3x3 bt709_to_2020 = float3x3(float3(0.6274, 0.0691, 0.0164),

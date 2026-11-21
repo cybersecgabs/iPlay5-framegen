@@ -124,6 +124,52 @@ enum FrameGenMode: String, Codable, CaseIterable, Identifiable {
 	}
 }
 
+struct ColorAdjustments: Codable, Equatable {
+	/// Additive brightness offset (-0.30 ... +0.30), 0.0 = neutral
+	var brightness: Double = 0.0
+	/// Contrast multiplier (0.50 ... 1.50), 1.0 = neutral
+	var contrast: Double = 1.0
+	/// Saturation multiplier (0.00 ... 2.00), 1.0 = neutral
+	var saturation: Double = 1.0
+	/// Midtone gamma multiplier (0.70 ... 1.50), 1.0 = neutral (preserves pure OLED blacks)
+	var gamma: Double = 1.0
+
+	static let neutral = ColorAdjustments()
+	static let vividOLED = ColorAdjustments(brightness: 0.0, contrast: 1.10, saturation: 1.20, gamma: 1.0)
+
+	init(brightness: Double = 0.0, contrast: Double = 1.0, saturation: Double = 1.0, gamma: Double = 1.0) {
+		self.brightness = brightness
+		self.contrast = contrast
+		self.saturation = saturation
+		self.gamma = gamma
+	}
+
+	init(from decoder: Decoder) throws {
+		let c = try decoder.container(keyedBy: CodingKeys.self)
+		let d = ColorAdjustments.neutral
+		brightness = try c.decodeIfPresent(Double.self, forKey: .brightness) ?? d.brightness
+		contrast = try c.decodeIfPresent(Double.self, forKey: .contrast) ?? d.contrast
+		saturation = try c.decodeIfPresent(Double.self, forKey: .saturation) ?? d.saturation
+		gamma = try c.decodeIfPresent(Double.self, forKey: .gamma) ?? d.gamma
+	}
+
+	var isNeutral: Bool {
+		abs(brightness) < 0.001
+			&& abs(contrast - 1.0) < 0.001
+			&& abs(saturation - 1.0) < 0.001
+			&& abs(gamma - 1.0) < 0.001
+	}
+
+	var clamped: ColorAdjustments {
+		ColorAdjustments(
+			brightness: min(max(brightness, -0.30), 0.30),
+			contrast: min(max(contrast, 0.50), 1.50),
+			saturation: min(max(saturation, 0.0), 2.00),
+			gamma: min(max(gamma, 0.70), 1.50)
+		)
+	}
+}
+
 struct StreamSettings: Codable, Equatable {
 	var resolution: StreamResolution = .p1080
 	var fps: Int = 60
@@ -139,6 +185,8 @@ struct StreamSettings: Codable, Equatable {
 	/// Preferred spatial scale factor for Apple ML Super Resolution (1.5x or 2.0x, matched dynamically to device support)
 	var vtScaleFactor: Double = 1.5
 	var showStats: Bool = false
+	/// Live GPU picture adjustments (brightness, contrast, saturation, gamma)
+	var colorAdjustments: ColorAdjustments = .neutral
 	/// Phone gyro for controllers without motion sensors (e.g. GameSir G8+)
 	var phoneMotion: Bool = true
 	var rumble: Bool = true
@@ -172,6 +220,7 @@ struct StreamSettings: Codable, Equatable {
 		deduplicateFrames = try c.decodeIfPresent(Bool.self, forKey: .deduplicateFrames) ?? d.deduplicateFrames
 		vtScaleFactor = try c.decodeIfPresent(Double.self, forKey: .vtScaleFactor) ?? d.vtScaleFactor
 		showStats = try c.decodeIfPresent(Bool.self, forKey: .showStats) ?? d.showStats
+		colorAdjustments = (try c.decodeIfPresent(ColorAdjustments.self, forKey: .colorAdjustments))?.clamped ?? d.colorAdjustments
 		phoneMotion = try c.decodeIfPresent(Bool.self, forKey: .phoneMotion) ?? d.phoneMotion
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
@@ -188,7 +237,6 @@ struct StreamSettings: Codable, Equatable {
 		sharpUpscaling = true
 		deduplicateFrames = true
 		highRefreshDisplay = true
-		showStats = true
 	}
 
 	mutating func applyProMotion120Preset() {

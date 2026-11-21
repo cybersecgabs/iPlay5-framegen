@@ -17,6 +17,12 @@ private struct RenderUniforms {
 	var transferMode: Int32
 	var bicubic: Int32
 	var fullRange: Int32
+	var brightness: Float
+	var contrast: Float
+	var saturation: Float
+	var gamma: Float
+	var colorAdjust: Int32
+	var _pad: Int32 = 0
 }
 
 /// Must match BlitUniforms in Shaders.metal
@@ -25,6 +31,12 @@ private struct BlitUniforms {
 	var uvOrigin: SIMD2<Float>
 	var uvSize: SIMD2<Float>
 	var transferMode: Int32
+	var colorAdjust: Int32
+	var brightness: Float
+	var contrast: Float
+	var saturation: Float
+	var gamma: Float
+	var bt2020: Int32
 	var _pad: Int32 = 0
 }
 
@@ -62,6 +74,7 @@ final class MetalRenderer {
 	private var hdrOutput = false
 	private var displayMode: DisplayMode = .fit
 	private var upscalingMode: UpscalingMode = .metalFX
+	private var colorAdjustments: ColorAdjustments = .neutral
 	private var paused = false
 
 	// Stats protected by lock
@@ -154,12 +167,14 @@ final class MetalRenderer {
 		applyOutputMode(to: layer)
 	}
 
-	func configure(hdr: Bool, displayMode: DisplayMode, upscalingMode: UpscalingMode) {
+	func configure(hdr: Bool, displayMode: DisplayMode, upscalingMode: UpscalingMode, colorAdjustments: ColorAdjustments = .neutral) {
+		let clampedColor = colorAdjustments.clamped
 		let changed = lock.withLock { () -> Bool in
 			let changed = self.hdrOutput != hdr
 			self.hdrOutput = hdr
 			self.displayMode = displayMode
 			self.upscalingMode = upscalingMode
+			self.colorAdjustments = clampedColor
 			if upscalingMode != .metalFX {
 				_fallbackReason = nil
 			}
@@ -172,6 +187,11 @@ final class MetalRenderer {
 
 	func setDisplayMode(_ mode: DisplayMode) {
 		lock.withLock { displayMode = mode }
+	}
+
+	func setColorAdjustments(_ adjustments: ColorAdjustments) {
+		let clamped = adjustments.clamped
+		lock.withLock { colorAdjustments = clamped }
 	}
 
 	func setPaused(_ paused: Bool) {
@@ -210,6 +230,7 @@ final class MetalRenderer {
 		let hdr = hdrOutput
 		let mode = displayMode
 		let upscaling = upscalingMode
+		let color = colorAdjustments
 		let paused = self.paused
 		lock.unlock()
 
@@ -221,7 +242,7 @@ final class MetalRenderer {
 		CVMetalTextureCacheFlush(cache, 0)
 
 		if !CVPixelBufferIsPlanar(pixelBuffer) {
-			displayPackedBuffer(pixelBuffer, layer: layer, target: target, mode: mode, upscaling: upscaling, cache: cache)
+			displayPackedBuffer(pixelBuffer, layer: layer, target: target, mode: mode, upscaling: upscaling, color: color, cache: cache)
 			return
 		}
 
@@ -256,6 +277,11 @@ final class MetalRenderer {
 
 		guard let drawable = layer.nextDrawable(), let commandBuffer = queue.makeCommandBuffer() else { return }
 		let drawableFormat = drawable.texture.pixelFormat
+		let colorEnabled: Int32 = color.isNeutral ? 0 : 1
+		let brightness = Float(color.brightness)
+		let contrast = Float(color.contrast)
+		let saturation = Float(color.saturation)
+		let gamma = Float(color.gamma)
 
 		#if !targetEnvironment(simulator)
 		if upscaling == .metalFX,
@@ -283,7 +309,12 @@ final class MetalRenderer {
 					matrix: bt2020 ? 1 : 0,
 					transferMode: transferMode,
 					bicubic: 0,
-					fullRange: fullRange ? 1 : 0
+					fullRange: fullRange ? 1 : 0,
+					brightness: brightness,
+					contrast: contrast,
+					saturation: saturation,
+					gamma: gamma,
+					colorAdjust: colorEnabled
 				)
 				let pass1 = MTLRenderPassDescriptor()
 				pass1.colorAttachments[0].texture = inTex
@@ -304,7 +335,18 @@ final class MetalRenderer {
 				scaler.inputContentHeight = videoH
 				scaler.encode(commandBuffer: commandBuffer)
 
-				var blitUniforms = BlitUniforms(ndcScale: ndcScale, uvOrigin: uvOrigin, uvSize: uvSize, transferMode: 0)
+				var blitUniforms = BlitUniforms(
+					ndcScale: ndcScale,
+					uvOrigin: uvOrigin,
+					uvSize: uvSize,
+					transferMode: 0,
+					colorAdjust: 0,
+					brightness: 0,
+					contrast: 1,
+					saturation: 1,
+					gamma: 1,
+					bt2020: 0
+				)
 				let pass3 = MTLRenderPassDescriptor()
 				pass3.colorAttachments[0].texture = drawable.texture
 				pass3.colorAttachments[0].loadAction = .clear
@@ -348,7 +390,12 @@ final class MetalRenderer {
 			matrix: bt2020 ? 1 : 0,
 			transferMode: transferMode,
 			bicubic: useBicubic ? 1 : 0,
-			fullRange: fullRange ? 1 : 0
+			fullRange: fullRange ? 1 : 0,
+			brightness: brightness,
+			contrast: contrast,
+			saturation: saturation,
+			gamma: gamma,
+			colorAdjust: colorEnabled
 		)
 
 		let pass = MTLRenderPassDescriptor()
@@ -408,6 +455,7 @@ final class MetalRenderer {
 		target: CGSize,
 		mode: DisplayMode,
 		upscaling: UpscalingMode,
+		color: ColorAdjustments,
 		cache: CVMetalTextureCache
 	) {
 		let cvFmt = CVPixelBufferGetPixelFormatType(pixelBuffer)
@@ -477,7 +525,20 @@ final class MetalRenderer {
 		#endif
 
 		let blitTransferMode: Int32 = (drawableFormat == .bgr10a2Unorm && mtlFormat == .bgra8Unorm) ? 1 : 0
-		var blitUniforms = BlitUniforms(ndcScale: ndcScale, uvOrigin: uvOrigin, uvSize: uvSize, transferMode: blitTransferMode)
+		let colorEnabled: Int32 = color.isNeutral ? 0 : 1
+		let isBT2020: Int32 = (drawableFormat == .bgr10a2Unorm && blitTransferMode == 0) ? 1 : 0
+		var blitUniforms = BlitUniforms(
+			ndcScale: ndcScale,
+			uvOrigin: uvOrigin,
+			uvSize: uvSize,
+			transferMode: blitTransferMode,
+			colorAdjust: colorEnabled,
+			brightness: Float(color.brightness),
+			contrast: Float(color.contrast),
+			saturation: Float(color.saturation),
+			gamma: Float(color.gamma),
+			bt2020: isBT2020
+		)
 		let pass = MTLRenderPassDescriptor()
 		pass.colorAttachments[0].texture = drawable.texture
 		pass.colorAttachments[0].loadAction = .clear

@@ -86,11 +86,60 @@ struct StreamSettingsForm: View {
 			if UIScreen.main.maximumFramesPerSecond > 60 {
 				Toggle("120 Hz screen", isOn: $settings.highRefreshDisplay)
 			}
-			Toggle("Show stats", isOn: $settings.showStats)
+			Toggle("Show stats overlay", isOn: $settings.showStats)
 		} header: {
 			Text("Display")
 		} footer: {
 			Text("Fit shows the whole picture, with black bars where the screen is a different shape to 16:9. Zoom fills the screen and crops the overflow. 120 Hz screen gets each frame on screen sooner, for a little more battery.")
+		}
+
+		Section {
+			VStack(alignment: .leading) {
+				HStack {
+					Text("Brightness")
+					Spacer()
+					let pct = Int((settings.colorAdjustments.brightness * 100).rounded())
+					Text(pct > 0 ? "+\(pct)%" : "\(pct)%").foregroundStyle(.secondary).monospacedDigit()
+				}
+				Slider(value: $settings.colorAdjustments.brightness, in: -0.30...0.30, step: 0.02)
+			}
+			VStack(alignment: .leading) {
+				HStack {
+					Text("Contrast")
+					Spacer()
+					Text("\(Int((settings.colorAdjustments.contrast * 100).rounded()))%").foregroundStyle(.secondary).monospacedDigit()
+				}
+				Slider(value: $settings.colorAdjustments.contrast, in: 0.50...1.50, step: 0.05)
+			}
+			VStack(alignment: .leading) {
+				HStack {
+					Text("Saturation")
+					Spacer()
+					Text("\(Int((settings.colorAdjustments.saturation * 100).rounded()))%").foregroundStyle(.secondary).monospacedDigit()
+				}
+				Slider(value: $settings.colorAdjustments.saturation, in: 0.00...2.00, step: 0.05)
+			}
+			VStack(alignment: .leading) {
+				HStack {
+					Text("Gamma")
+					Spacer()
+					Text(String(format: "%.2f", settings.colorAdjustments.gamma)).foregroundStyle(.secondary).monospacedDigit()
+				}
+				Slider(value: $settings.colorAdjustments.gamma, in: 0.70...1.50, step: 0.05)
+			}
+			Button {
+				settings.colorAdjustments = .vividOLED
+			} label: {
+				Label("Vivid OLED (+10% contrast, +20% sat)", systemImage: "sun.max.fill")
+			}
+			Button("Reset colors", role: .destructive) {
+				settings.colorAdjustments = .neutral
+			}
+			.disabled(settings.colorAdjustments.isNeutral)
+		} header: {
+			Text("Color")
+		} footer: {
+			Text("Adjusts picture colors live on the GPU without reconnecting. Gamma lifts shadows while keeping pure OLED blacks.")
 		}
 
 		Section {

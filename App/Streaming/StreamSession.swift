@@ -130,7 +130,7 @@ final class StreamSession {
 		let decoder = VideoDecoder(hevc: codec == .h265, tenBit: settings.hdr)
 		decoder.onFrame = { [weak enhancer] frame in enhancer?.submit(frame, arrivalTime: CACurrentMediaTime()) }
 		self.decoder = decoder
-		renderer.configure(hdr: settings.hdr, displayMode: settings.displayMode, upscalingMode: settings.upscalingMode)
+		renderer.configure(hdr: settings.hdr, displayMode: settings.displayMode, upscalingMode: settings.upscalingMode, colorAdjustments: settings.colorAdjustments)
 		renderer.setPaused(paused)
 
 		var config = CKSessionConfig()
@@ -272,11 +272,12 @@ final class StreamSession {
 		input.selectIsTouchpad = new.selectIsTouchpad
 		input.rumble.enabled = new.rumble
 		renderer?.setDisplayMode(new.displayMode)
+		renderer?.setColorAdjustments(new.colorAdjustments)
 		if needsReconnect, handle != nil {
 			teardown()
 			start()
 		} else {
-			renderer?.configure(hdr: new.hdr, displayMode: new.displayMode, upscalingMode: new.upscalingMode)
+			renderer?.configure(hdr: new.hdr, displayMode: new.displayMode, upscalingMode: new.upscalingMode, colorAdjustments: new.colorAdjustments)
 			enhancer?.configure(
 				upscalingMode: new.upscalingMode,
 				frameGenMode: new.frameGenMode,
