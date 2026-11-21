@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # Validates an unsigned iPlay5 .ipa for SideStore/AltStore/Sideloadly installation.
-set -euo pipefail
+set -Eeuo pipefail
+
+# ::error:: lines show up as GitHub annotations, readable without opening the log.
+fail() {
+	echo "::error title=verify-ipa::$*"
+	echo "ERROR: $*" >&2
+	exit 1
+}
+trap 'echo "::error title=verify-ipa::line $LINENO failed: $BASH_COMMAND"' ERR
 
 IPA="${1:-build/iPlay5.ipa}"
 if [ ! -s "$IPA" ]; then
-	echo "ERROR: IPA not found or empty: $IPA" >&2
-	exit 1
+	fail "IPA not found or empty: $IPA"
 fi
 
 TMP="$(mktemp -d)"
@@ -13,20 +20,17 @@ trap 'rm -rf "$TMP"' EXIT
 
 unzip -q "$IPA" -d "$TMP"
 if [ ! -d "$TMP/Payload" ]; then
-	echo "ERROR: Payload/ directory missing from $IPA" >&2
-	exit 1
+	fail "Payload/ directory missing from $IPA"
 fi
 
 APP="$(find "$TMP/Payload" -maxdepth 1 -name '*.app' | head -n 1)"
 if [ -z "$APP" ] || [ ! -d "$APP" ]; then
-	echo "ERROR: No .app bundle found inside Payload/ of $IPA" >&2
-	exit 1
+	fail "No .app bundle found inside Payload/ of $IPA"
 fi
 
 PLIST="$APP/Info.plist"
 if [ ! -f "$PLIST" ]; then
-	echo "ERROR: Missing Info.plist in $APP" >&2
-	exit 1
+	fail "Missing Info.plist in $APP"
 fi
 
 plutil -lint "$PLIST" >/dev/null
@@ -37,48 +41,40 @@ plist_val() {
 
 BUNDLE_ID="$(plist_val CFBundleIdentifier)"
 if [ -z "$BUNDLE_ID" ]; then
-	echo "ERROR: CFBundleIdentifier is missing or empty" >&2
-	exit 1
+	fail "CFBundleIdentifier is missing or empty"
 fi
 
 EXEC="$(plist_val CFBundleExecutable)"
 if [ -z "$EXEC" ] || [ ! -s "$APP/$EXEC" ]; then
-	echo "ERROR: Missing or empty executable '$EXEC' in $APP" >&2
-	exit 1
+	fail "Missing or empty executable '$EXEC' in $APP"
 fi
 
 ARCHS="$(lipo -archs "$APP/$EXEC" 2>/dev/null || file "$APP/$EXEC")"
 if ! echo "$ARCHS" | grep -q "arm64"; then
-	echo "ERROR: Binary '$EXEC' is not arm64: $ARCHS" >&2
-	exit 1
+	fail "Binary '$EXEC' is not arm64: $ARCHS"
 fi
 
 HIGH_REFRESH="$(plist_val CADisableMinimumFrameDurationOnPhone)"
 if [ "$HIGH_REFRESH" != "true" ]; then
-	echo "ERROR: CADisableMinimumFrameDurationOnPhone must be true (got '$HIGH_REFRESH')" >&2
-	exit 1
+	fail "CADisableMinimumFrameDurationOnPhone must be true (got '$HIGH_REFRESH')"
 fi
 
 GAME_MODE="$(plist_val GCSupportsGameMode)"
 if [ "$GAME_MODE" != "true" ]; then
-	echo "ERROR: GCSupportsGameMode must be true (got '$GAME_MODE')" >&2
-	exit 1
+	fail "GCSupportsGameMode must be true (got '$GAME_MODE')"
 fi
 
 LAN_DESC="$(plist_val NSLocalNetworkUsageDescription)"
 if [ -z "$LAN_DESC" ]; then
-	echo "ERROR: NSLocalNetworkUsageDescription is missing or empty" >&2
-	exit 1
+	fail "NSLocalNetworkUsageDescription is missing or empty"
 fi
 
 if ! find "$APP" -name 'default.metallib' | grep -q .; then
-	echo "ERROR: Compiled Metal shader library default.metallib not found in $APP" >&2
-	exit 1
+	fail "Compiled Metal shader library default.metallib not found in $APP"
 fi
 
 if find "$APP" \( -name '*.entitlements' -o -name '*.xcent' \) -exec grep -E -q '(com\.apple\.developer\.networking\.multicast|aps-environment|com\.apple\.developer\.icloud)' {} +; then
-	echo "ERROR: Paid-only entitlements found that would block free sideloading" >&2
-	exit 1
+	fail "Paid-only entitlements found that would block free sideloading"
 fi
 
 echo "Verified $IPA: $EXEC ($BUNDLE_ID, $ARCHS), Info.plist, default.metallib, sideload-safe entitlements"
