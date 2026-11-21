@@ -73,8 +73,11 @@ if ! find "$APP" -name 'default.metallib' | grep -q .; then
 	fail "Compiled Metal shader library default.metallib not found in $APP"
 fi
 
-if find "$APP" \( -name '*.entitlements' -o -name '*.xcent' \) -exec grep -E -q '(com\.apple\.developer\.networking\.multicast|aps-environment|com\.apple\.developer\.icloud)' {} +; then
-	fail "Paid-only entitlements found that would block free sideloading"
+# grep -l prints only files that match; `find -exec ... {} +` alone exits 0 when
+# no entitlements file exists (the normal unsigned case), which read as a hit.
+PAID_ENT="$(find "$APP" \( -name '*.entitlements' -o -name '*.xcent' \) -exec grep -E -l '(com\.apple\.developer\.networking\.multicast|aps-environment|com\.apple\.developer\.icloud)' {} + 2>/dev/null || true)"
+if [ -n "$PAID_ENT" ]; then
+	fail "Paid-only entitlements found that would block free sideloading: $PAID_ENT"
 fi
 
 echo "Verified $IPA: $EXEC ($BUNDLE_ID, $ARCHS), Info.plist, default.metallib, sideload-safe entitlements"
