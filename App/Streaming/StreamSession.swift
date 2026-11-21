@@ -62,8 +62,18 @@ final class StreamSession {
 	@ObservationIgnored private let audio = AudioOutput()
 	@ObservationIgnored private var decoder: VideoDecoder?
 	@ObservationIgnored private var enhancer: VideoEnhancer?
+	private final class CallbackContext {
+		let session: StreamSession
+		let generation: Int
+
+		init(session: StreamSession, generation: Int) {
+			self.session = session
+			self.generation = generation
+		}
+	}
+
 	@ObservationIgnored private var handle: OpaquePointer?
-	@ObservationIgnored private var selfRef: Unmanaged<StreamSession>?
+	@ObservationIgnored private var callbackRef: Unmanaged<CallbackContext>?
 	@ObservationIgnored private var statsTimer: Timer?
 	@ObservationIgnored private var lastDecoded = 0
 	@ObservationIgnored private var lastPresented = 0
@@ -140,17 +150,19 @@ final class StreamSession {
 		withUnsafeMutableBytes(of: &config.regist_key) { _ = console.registKey.prefix(16).copyBytes(to: $0) }
 		withUnsafeMutableBytes(of: &config.rp_key) { _ = console.rpKey.prefix(16).copyBytes(to: $0) }
 
-		let ref = Unmanaged.passRetained(self)
-		selfRef = ref
+		let ref = Unmanaged.passRetained(CallbackContext(session: self, generation: generation))
+		callbackRef = ref
 		var callbacks = CKSessionCallbacks()
 		callbacks.user = ref.toOpaque()
 		callbacks.on_video = { user, buf, size, lost, _ in
 			guard let user, let buf else { return true }
-			return Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue().handleVideo(buf, Int(size), lost)
+			return Unmanaged<CallbackContext>.fromOpaque(user).takeUnretainedValue().session.handleVideo(buf, Int(size), lost)
 		}
 		callbacks.on_event = { user, type, code, message in
 			guard let user else { return }
-			let session = Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue()
+			let ctx = Unmanaged<CallbackContext>.fromOpaque(user).takeUnretainedValue()
+			let session = ctx.session
+			let generation = ctx.generation
 			let text = message.map { String(cString: $0) }
 			DispatchQueue.main.async {
 				guard session.sessionGeneration == generation else { return }
@@ -159,13 +171,15 @@ final class StreamSession {
 		}
 		callbacks.on_rumble = { user, left, right in
 			guard let user else { return }
-			Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue().handleRumble(left, right)
+			Unmanaged<CallbackContext>.fromOpaque(user).takeUnretainedValue().session.handleRumble(left, right)
 		}
 		callbacks.on_trigger_effects = { user, tl, l, tr, r in
 			guard let user, let l, let r else { return }
 			let left = Array(UnsafeBufferPointer(start: l, count: 10))
 			let right = Array(UnsafeBufferPointer(start: r, count: 10))
-			let session = Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue()
+			let ctx = Unmanaged<CallbackContext>.fromOpaque(user).takeUnretainedValue()
+			let session = ctx.session
+			let generation = ctx.generation
 			DispatchQueue.main.async {
 				guard session.sessionGeneration == generation else { return }
 				session.input.applyTriggerEffect(typeLeft: tl, left: left, typeRight: tr, right: right)
@@ -173,7 +187,7 @@ final class StreamSession {
 		}
 		callbacks.on_haptics = { user, samples, frames in
 			guard let user, let samples else { return }
-			Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue().handleHaptics(samples, Int(frames))
+			Unmanaged<CallbackContext>.fromOpaque(user).takeUnretainedValue().session.handleHaptics(samples, Int(frames))
 		}
 		callbacks.on_log = { _, level, message in
 			guard let message else { return }
@@ -187,7 +201,7 @@ final class StreamSession {
 		}
 		guard let created else {
 			ref.release()
-			selfRef = nil
+			callbackRef = nil
 			state = .ended(error: "Couldn't create the Remote Play session.")
 			return
 		}
@@ -337,8 +351,8 @@ final class StreamSession {
 		decoder = nil
 		enhancer?.invalidate()
 		enhancer = nil
-		selfRef?.release()
-		selfRef = nil
+		callbackRef?.release()
+		callbackRef = nil
 		UIApplication.shared.isIdleTimerDisabled = false
 	}
 
