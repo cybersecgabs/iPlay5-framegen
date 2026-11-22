@@ -771,6 +771,18 @@ final class RumbleOutput {
 		}
 	}
 
+	static func shouldFallbackToPhoneEngine(
+		controllerEnginesCreated: Bool,
+		target: RumbleTarget,
+		deviceSupportsHaptics: Bool
+	) -> Bool {
+		guard deviceSupportsHaptics, !controllerEnginesCreated else { return false }
+		switch target {
+		case .auto, .phoneOnly: return true
+		case .controllerOnly: return false
+		}
+	}
+
 	static func computeMotorLevels(left: UInt8, right: UInt8, motorCount: Int, intensity: Float, enabled: Bool) -> [Float] {
 		guard motorCount > 0 else { return [] }
 		let scale = enabled ? min(max(intensity, 0), 1) : 0
@@ -1076,8 +1088,10 @@ final class RumbleOutput {
 					newPlayers.append(player)
 				}
 			}
-		} else if Self.shouldUsePhoneEngine(
-			controllerHasHaptics: controllerHasHaptics,
+		}
+
+		if Self.shouldFallbackToPhoneEngine(
+			controllerEnginesCreated: !newEngines.isEmpty,
 			target: target,
 			deviceSupportsHaptics: CHHapticEngine.capabilitiesForHardware().supportsHaptics
 		) {
@@ -1088,7 +1102,11 @@ final class RumbleOutput {
 					newEngines.append(engine)
 					newPlayers.append(player)
 					isPhone = true
-					log.notice("Haptics: using iPhone Taptic Engine")
+					if controllerHasHaptics && target == .auto {
+						log.notice("Haptics: controller haptics unavailable, falling back to iPhone Taptic Engine")
+					} else {
+						log.notice("Haptics: using iPhone Taptic Engine")
+					}
 				}
 			} catch {
 				log.error("Phone haptics init failed: \(error.localizedDescription, privacy: .public)")

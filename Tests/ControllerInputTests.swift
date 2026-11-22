@@ -303,4 +303,20 @@ final class ControllerInputTests: XCTestCase {
 		XCTAssertTrue(resetResult.touchUp)
 		XCTAssertEqual(vm.phase, .idle)
 	}
+
+	func testRumbleFallbackToPhoneWhenControllerHapticsFail() {
+		// Controller advertised haptics, but engine creation/start failed (e.g. spoofed GameSir-G8 DualSense)
+		XCTAssertTrue(RumbleOutput.shouldFallbackToPhoneEngine(controllerEnginesCreated: false, target: .auto, deviceSupportsHaptics: true))
+		XCTAssertFalse(RumbleOutput.shouldFallbackToPhoneEngine(controllerEnginesCreated: false, target: .controllerOnly, deviceSupportsHaptics: true))
+		XCTAssertTrue(RumbleOutput.shouldFallbackToPhoneEngine(controllerEnginesCreated: false, target: .phoneOnly, deviceSupportsHaptics: true))
+
+		// Once controller engines succeed, never also attach phone engine
+		XCTAssertFalse(RumbleOutput.shouldFallbackToPhoneEngine(controllerEnginesCreated: true, target: .auto, deviceSupportsHaptics: true))
+		XCTAssertFalse(RumbleOutput.shouldFallbackToPhoneEngine(controllerEnginesCreated: true, target: .controllerOnly, deviceSupportsHaptics: true))
+		XCTAssertFalse(RumbleOutput.shouldFallbackToPhoneEngine(controllerEnginesCreated: true, target: .phoneOnly, deviceSupportsHaptics: true))
+
+		// No phone haptics hardware
+		XCTAssertFalse(RumbleOutput.shouldFallbackToPhoneEngine(controllerEnginesCreated: false, target: .auto, deviceSupportsHaptics: false))
+		XCTAssertFalse(RumbleOutput.shouldFallbackToPhoneEngine(controllerEnginesCreated: false, target: .phoneOnly, deviceSupportsHaptics: false))
+	}
 }
