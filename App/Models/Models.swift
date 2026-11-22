@@ -149,6 +149,35 @@ enum RumbleTarget: String, Codable, CaseIterable, Identifiable {
 	}
 }
 
+enum StatsOverlayMode: String, Codable, CaseIterable, Identifiable {
+	case off
+	case mini
+	case full
+
+	var id: String { rawValue }
+	var label: String {
+		switch self {
+		case .off: "Off"
+		case .mini: "Mini (1 line)"
+		case .full: "Full (Debug)"
+		}
+	}
+	var shortLabel: String {
+		switch self {
+		case .off: "Off"
+		case .mini: "Mini"
+		case .full: "Full"
+		}
+	}
+	func next() -> StatsOverlayMode {
+		switch self {
+		case .off: .mini
+		case .mini: .full
+		case .full: .off
+		}
+	}
+}
+
 struct ColorAdjustments: Codable, Equatable {
 	/// Additive brightness offset (-0.30 ... +0.30), 0.0 = neutral
 	var brightness: Double = 0.0
@@ -225,6 +254,9 @@ struct StreamSettings: Codable, Equatable {
 	/// Preferred spatial scale factor for Apple ML Super Resolution (1.5x or 2.0x, matched dynamically to device support)
 	var vtScaleFactor: Double = 1.5
 	var showStats: Bool = false
+	var statsOverlayMode: StatsOverlayMode = .off
+	/// Controller quick shortcuts (Select + R1 toggles Frame Gen, Select + L1 cycles Stats HUD)
+	var controllerShortcuts: Bool = true
 	/// Live GPU picture adjustments (brightness, contrast, saturation, gamma)
 	var colorAdjustments: ColorAdjustments = .neutral
 	/// Phone gyro for controllers without motion sensors (e.g. GameSir G8+)
@@ -269,6 +301,13 @@ struct StreamSettings: Codable, Equatable {
 		deduplicateFrames = try c.decodeIfPresent(Bool.self, forKey: .deduplicateFrames) ?? d.deduplicateFrames
 		vtScaleFactor = try c.decodeIfPresent(Double.self, forKey: .vtScaleFactor) ?? d.vtScaleFactor
 		showStats = try c.decodeIfPresent(Bool.self, forKey: .showStats) ?? d.showStats
+		if let decodedStatsMode = try c.decodeIfPresent(StatsOverlayMode.self, forKey: .statsOverlayMode) {
+			statsOverlayMode = decodedStatsMode
+			showStats = decodedStatsMode != .off
+		} else {
+			statsOverlayMode = showStats ? .full : .off
+		}
+		controllerShortcuts = try c.decodeIfPresent(Bool.self, forKey: .controllerShortcuts) ?? d.controllerShortcuts
 		colorAdjustments = (try c.decodeIfPresent(ColorAdjustments.self, forKey: .colorAdjustments))?.clamped ?? d.colorAdjustments
 		phoneMotion = try c.decodeIfPresent(Bool.self, forKey: .phoneMotion) ?? d.phoneMotion
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble

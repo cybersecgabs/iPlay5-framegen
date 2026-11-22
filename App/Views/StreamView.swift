@@ -27,6 +27,8 @@ struct StreamView: View {
 	@State private var pin = ""
 	@State private var phone = PhoneStatus()
 	@State private var showHeatWarning = false
+	@State private var shortcutToast: ShortcutToast?
+	@State private var hideToastTask: Task<Void, Never>?
 	/// The corner hints show once per stream screen, not again after a reconnect
 	@State private var hintShown = false
 	@State private var stopped = false
@@ -130,6 +132,25 @@ struct StreamView: View {
 					.transition(.opacity)
 			}
 
+			if let shortcutToast {
+				HStack(spacing: 8) {
+					Image(systemName: shortcutToast.icon)
+					Text(shortcutToast.message)
+				}
+				.font(.subheadline.weight(.semibold))
+				.foregroundStyle(.white)
+				.padding(.horizontal, 14)
+				.padding(.vertical, 8)
+				.background(.black.opacity(0.72), in: Capsule())
+				.overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+				.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+				.padding(.top, 14)
+				.ignoresSafeArea()
+				.allowsHitTesting(false)
+				.transition(.opacity.combined(with: .move(edge: .top)))
+				.zIndex(5)
+			}
+
 			if let session, let text = session.keyboardText, !folded, !portrait {
 				KeyboardOverlay(
 					initialText: text,
@@ -186,6 +207,17 @@ struct StreamView: View {
 			showMenuButton = false
 			withAnimation(.easeOut(duration: 0.2)) { showQuickDrawer = true }
 		}
+		session.input.onToggleFrameGen = {
+			let next: FrameGenMode = settingsStore.settings.frameGenMode == .off ? .x2 : .off
+			settingsStore.settings.frameGenMode = next
+			showToast(next == .x2 ? "Frame Gen: 2x" : "Frame Gen: Off", icon: "sparkles.tv")
+		}
+		session.input.onCycleHUD = {
+			let next = settingsStore.settings.statsOverlayMode.next()
+			settingsStore.settings.statsOverlayMode = next
+			settingsStore.settings.showStats = next != .off
+			showToast("HUD: \(next.shortLabel)", icon: "gauge.with.dots.needle.67percent")
+		}
 		self.session = session
 		session.start()
 	}
@@ -193,6 +225,9 @@ struct StreamView: View {
 	private func stop() {
 		stopped = true
 		showQuickDrawer = false
+		hideToastTask?.cancel()
+		hideToastTask = nil
+		shortcutToast = nil
 		orientationUpdateWork?.cancel()
 		orientationUpdateWork = nil
 		hideMenuButton?.cancel()
@@ -315,6 +350,22 @@ struct StreamView: View {
 		.allowsHitTesting(false)
 	}
 
+	// MARK: - Shortcut toast
+
+	private func showToast(_ message: String, icon: String) {
+		hideToastTask?.cancel()
+		withAnimation(.easeOut(duration: 0.18)) {
+			shortcutToast = ShortcutToast(message: message, icon: icon)
+		}
+		hideToastTask = Task { @MainActor in
+			try? await Task.sleep(for: .seconds(1.6))
+			guard !Task.isCancelled else { return }
+			withAnimation(.easeIn(duration: 0.3)) {
+				shortcutToast = nil
+			}
+		}
+	}
+
 	// MARK: - Heat warning
 
 	private func flashHeatWarning() {
@@ -385,7 +436,16 @@ struct StreamView: View {
 				Button("Cancel") { dismiss() }.buttonStyle(.bordered)
 			}
 		case .streaming:
-			if session.settings.showStats {
+			switch session.settings.statsOverlayMode {
+			case .off:
+				EmptyView()
+			case .mini:
+				MiniStatsOverlay(stats: session.stats, settings: session.settings, phone: phone)
+					.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+					.padding(.top, 10)
+					.padding(.leading, 12)
+					.allowsHitTesting(false)
+			case .full:
 				StatsOverlay(stats: session.stats, settings: session.settings)
 					.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 					.padding(12)
@@ -540,6 +600,64 @@ struct StreamView: View {
 			.navigationTitle(console.name)
 			.navigationBarTitleDisplayMode(.inline)
 		}
+	}
+}
+
+private struct ShortcutToast: Equatable {
+	let message: String
+	let icon: String
+}
+
+private struct MiniStatsOverlay: View {
+	let stats: StreamStats
+	let settings: StreamSettings
+	let phone: PhoneStatus
+
+	private var displayFps: Int {
+		Int((stats.presentedFps > 0 ? stats.presentedFps : stats.fps).rounded())
+	}
+
+	private var fgColor: Color {
+		if stats.enhancerError != nil { return .orange }
+		if stats.generatedFps > 0 || stats.activeFrameGen != "Off" { return .cyan }
+		return .secondary
+	}
+
+	var body: some View {
+		HStack(spacing: 6) {
+			Text("\(displayFps) fps")
+			if settings.frameGenMode != .off {
+				Text("·").foregroundStyle(.secondary)
+				Text("FG").foregroundStyle(fgColor)
+			}
+			Text("·").foregroundStyle(.secondary)
+			if stats.packetLoss > 0.01 {
+				Text("\(Int(stats.rttMs.rounded())) ms (\(Int((stats.packetLoss * 100).rounded()))%)")
+					.foregroundStyle(.orange)
+			} else {
+				Text("\(Int(stats.rttMs.rounded())) ms")
+			}
+			if phone.batteryLevel >= 0 {
+				Text("·").foregroundStyle(.secondary)
+				HStack(spacing: 2) {
+					if phone.batteryState == .charging || phone.batteryState == .full {
+						Image(systemName: "bolt.fill")
+							.foregroundStyle(.green)
+					}
+					Text("\(Int((phone.batteryLevel * 100).rounded()))%")
+				}
+			}
+			if phone.isHot {
+				Image(systemName: "thermometer.high")
+					.foregroundStyle(.orange)
+			}
+		}
+		.font(.caption2.monospacedDigit().weight(.medium))
+		.lineLimit(1)
+		.padding(.horizontal, 10)
+		.padding(.vertical, 5)
+		.background(.black.opacity(0.58), in: Capsule())
+		.foregroundStyle(.white)
 	}
 }
 

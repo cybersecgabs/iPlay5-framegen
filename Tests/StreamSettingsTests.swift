@@ -160,4 +160,47 @@ final class StreamSettingsTests: XCTestCase {
 		XCTAssertEqual(legacy.rumbleTarget, .auto)
 		XCTAssertEqual(legacy.rumbleIntensity, 1.0, accuracy: 0.0001)
 	}
+
+	func testStatsOverlayModeCycleMigrationAndShortcuts() throws {
+		XCTAssertEqual(StatsOverlayMode.off.next(), .mini)
+		XCTAssertEqual(StatsOverlayMode.mini.next(), .full)
+		XCTAssertEqual(StatsOverlayMode.full.next(), .off)
+
+		var settings = StreamSettings()
+		XCTAssertEqual(settings.statsOverlayMode, .off)
+		XCTAssertFalse(settings.showStats)
+		XCTAssertTrue(settings.controllerShortcuts)
+
+		settings.statsOverlayMode = .mini
+		settings.showStats = true
+		settings.controllerShortcuts = false
+		let encoded = try JSONEncoder().encode(settings)
+		let decoded = try JSONDecoder().decode(StreamSettings.self, from: encoded)
+		XCTAssertEqual(decoded.statsOverlayMode, .mini)
+		XCTAssertTrue(decoded.showStats)
+		XCTAssertFalse(decoded.controllerShortcuts)
+
+		// Legacy migration from showStats boolean
+		let legacyTrue = try JSONDecoder().decode(StreamSettings.self, from: #"{"showStats":true}"#.data(using: .utf8)!)
+		XCTAssertEqual(legacyTrue.statsOverlayMode, .full)
+		XCTAssertTrue(legacyTrue.showStats)
+		XCTAssertTrue(legacyTrue.controllerShortcuts)
+
+		let legacyFalse = try JSONDecoder().decode(StreamSettings.self, from: #"{"showStats":false}"#.data(using: .utf8)!)
+		XCTAssertEqual(legacyFalse.statsOverlayMode, .off)
+		XCTAssertFalse(legacyFalse.showStats)
+
+		// Explicit statsOverlayMode syncs showStats
+		let explicitMini = try JSONDecoder().decode(StreamSettings.self, from: #"{"showStats":false,"statsOverlayMode":"mini"}"#.data(using: .utf8)!)
+		XCTAssertEqual(explicitMini.statsOverlayMode, .mini)
+		XCTAssertTrue(explicitMini.showStats)
+
+		// GTA 6 preset preserves Mini HUD choice
+		var gta6 = StreamSettings()
+		gta6.statsOverlayMode = .mini
+		gta6.showStats = true
+		gta6.applyGTA6Preset()
+		XCTAssertEqual(gta6.statsOverlayMode, .mini)
+		XCTAssertTrue(gta6.showStats)
+	}
 }

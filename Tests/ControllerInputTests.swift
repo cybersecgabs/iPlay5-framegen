@@ -144,4 +144,71 @@ final class ControllerInputTests: XCTestCase {
 		XCTAssertEqual(off.intensity, 0.0, accuracy: 0.0001)
 		XCTAssertEqual(off.sharpness, RumbleOutput.phoneBaseSharpness, accuracy: 0.0001)
 	}
+
+	func testShortcutTrackerTriggersOnceOnNewChordAndSuppressesShoulder() {
+		var tracker = ControllerInput.ControllerShortcutTracker()
+
+		// Select held first, then R1 pressed -> triggers toggleFrameGen once and suppresses R1
+		let holdSelect = tracker.update(enabled: true, select: true, start: false, l1: false, r1: false)
+		XCTAssertTrue(holdSelect.triggered.isEmpty)
+		XCTAssertFalse(holdSelect.suppressR1)
+
+		let triggerR1 = tracker.update(enabled: true, select: true, start: false, l1: false, r1: true)
+		XCTAssertEqual(triggerR1.triggered, [.toggleFrameGen])
+		XCTAssertTrue(triggerR1.suppressR1)
+		XCTAssertFalse(triggerR1.suppressL1)
+
+		// Repeating while held must not re-trigger and keeps suppressing R1
+		let heldAgain = tracker.update(enabled: true, select: true, start: false, l1: false, r1: true)
+		XCTAssertTrue(heldAgain.triggered.isEmpty)
+		XCTAssertTrue(heldAgain.suppressR1)
+
+		// Releasing R1 clears suppression and re-arms
+		let releasedR1 = tracker.update(enabled: true, select: true, start: false, l1: false, r1: false)
+		XCTAssertTrue(releasedR1.triggered.isEmpty)
+		XCTAssertFalse(releasedR1.suppressR1)
+
+		let retriggerR1 = tracker.update(enabled: true, select: true, start: false, l1: false, r1: true)
+		XCTAssertEqual(retriggerR1.triggered, [.toggleFrameGen])
+	}
+
+	func testShortcutTrackerKeepsSuppressionIfSelectReleasedBeforeShoulder() {
+		var tracker = ControllerInput.ControllerShortcutTracker()
+
+		let triggerL1 = tracker.update(enabled: true, select: true, start: false, l1: true, r1: false)
+		XCTAssertEqual(triggerL1.triggered, [.cycleHUD])
+		XCTAssertTrue(triggerL1.suppressL1)
+
+		// Select released while L1 is still held -> L1 remains suppressed until L1 is released
+		let releaseSelect = tracker.update(enabled: true, select: false, start: false, l1: true, r1: false)
+		XCTAssertTrue(releaseSelect.triggered.isEmpty)
+		XCTAssertTrue(releaseSelect.suppressL1)
+
+		let releaseL1 = tracker.update(enabled: true, select: false, start: false, l1: false, r1: false)
+		XCTAssertFalse(releaseL1.suppressL1)
+	}
+
+	func testShortcutTrackerDoesNotMisfireWhenShoulderHeldBeforeSelectOrWithStartOrDisabled() {
+		var tracker = ControllerInput.ControllerShortcutTracker()
+
+		// Holding R1/L1 in-game before tapping Select (touchpad) must NOT trigger or suppress R1/L1
+		_ = tracker.update(enabled: true, select: false, start: false, l1: true, r1: true)
+		let tapSelect = tracker.update(enabled: true, select: true, start: false, l1: true, r1: true)
+		XCTAssertTrue(tapSelect.triggered.isEmpty)
+		XCTAssertFalse(tapSelect.suppressL1)
+		XCTAssertFalse(tapSelect.suppressR1)
+
+		// Reset and test Select + Start + R1 doesn't trigger shortcut
+		tracker.reset()
+		let withStart = tracker.update(enabled: true, select: true, start: true, l1: false, r1: true)
+		XCTAssertTrue(withStart.triggered.isEmpty)
+		XCTAssertFalse(withStart.suppressR1)
+
+		// Disabled skips everything
+		tracker.reset()
+		let disabled = tracker.update(enabled: false, select: true, start: false, l1: true, r1: true)
+		XCTAssertTrue(disabled.triggered.isEmpty)
+		XCTAssertFalse(disabled.suppressL1)
+		XCTAssertFalse(disabled.suppressR1)
+	}
 }

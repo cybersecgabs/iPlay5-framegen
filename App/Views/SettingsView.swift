@@ -108,7 +108,12 @@ struct StreamSettingsForm: View {
 			if UIScreen.main.maximumFramesPerSecond > 60 {
 				Toggle("120 Hz screen", isOn: $settings.highRefreshDisplay)
 			}
-			Toggle("Show stats overlay", isOn: $settings.showStats)
+			Picker("Stats HUD", selection: $settings.statsOverlayMode) {
+				ForEach(StatsOverlayMode.allCases) { Text($0.label).tag($0) }
+			}
+			.onChange(of: settings.statsOverlayMode) { _, new in
+				settings.showStats = new != .off
+			}
 		} header: {
 			Text("Display")
 		} footer: {
@@ -191,10 +196,11 @@ struct StreamSettingsForm: View {
 			}
 			Toggle("Phone gyro for motion controls", isOn: $settings.phoneMotion)
 			Toggle("Select button is touchpad click", isOn: $settings.selectIsTouchpad)
+			Toggle("Quick shortcuts (Select + R1 / L1)", isOn: $settings.controllerShortcuts)
 		} header: {
 			Text("Controller")
 		} footer: {
-			Text("Auto uses controller motors if present or the iPhone Taptic Engine otherwise (e.g. GameSir G8). Phone gyro is used when the controller has no motion sensors. Hold Select + Start for a second during a stream to open the menu.")
+			Text("Auto uses controller motors if present or the iPhone Taptic Engine otherwise (e.g. GameSir G8). Phone gyro is used when the controller has no motion sensors. Quick shortcuts: Select + R1 toggles Frame Gen, Select + L1 cycles Stats HUD, hold Select + Start to open Quick Tuning.")
 		}
 	}
 }

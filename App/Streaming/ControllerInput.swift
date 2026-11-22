@@ -19,6 +19,8 @@ final class ControllerInput {
 	var onTouch: ((TouchEvent) -> Void)?
 	/// Select + Start held for a second
 	var onMenuCombo: (() -> Void)?
+	var onToggleFrameGen: (() -> Void)?
+	var onCycleHUD: (() -> Void)?
 
 	enum TouchEvent {
 		case down(slot: Int, x: UInt16, y: UInt16)
@@ -52,6 +54,65 @@ final class ControllerInput {
 		)
 	}
 
+	enum ControllerShortcut: Equatable {
+		case toggleFrameGen
+		case cycleHUD
+	}
+
+	struct ShortcutUpdate: Equatable {
+		let triggered: [ControllerShortcut]
+		let suppressL1: Bool
+		let suppressR1: Bool
+	}
+
+	struct ControllerShortcutTracker {
+		private var prevSelect = false
+		private var prevL1 = false
+		private var prevR1 = false
+		private var l1Consumed = false
+		private var r1Consumed = false
+
+		mutating func reset() {
+			prevSelect = false
+			prevL1 = false
+			prevR1 = false
+			l1Consumed = false
+			r1Consumed = false
+		}
+
+		mutating func update(enabled: Bool, select: Bool, start: Bool, l1: Bool, r1: Bool) -> ShortcutUpdate {
+			defer {
+				prevSelect = select
+				prevL1 = l1
+				prevR1 = r1
+			}
+			guard enabled else {
+				l1Consumed = false
+				r1Consumed = false
+				return ShortcutUpdate(triggered: [], suppressL1: false, suppressR1: false)
+			}
+			if !l1 { l1Consumed = false }
+			if !r1 { r1Consumed = false }
+
+			var triggered: [ControllerShortcut] = []
+			if select && !start {
+				if r1 && !prevR1 && !r1Consumed {
+					r1Consumed = true
+					triggered.append(.toggleFrameGen)
+				}
+				if l1 && !prevL1 && !l1Consumed {
+					l1Consumed = true
+					triggered.append(.cycleHUD)
+				}
+			}
+			return ShortcutUpdate(
+				triggered: triggered,
+				suppressL1: l1Consumed && l1,
+				suppressR1: r1Consumed && r1
+			)
+		}
+	}
+
 	var selectIsTouchpad = false {
 		didSet {
 			if selectIsTouchpad != oldValue, let pad = controller?.extendedGamepad {
@@ -60,6 +121,7 @@ final class ControllerInput {
 		}
 	}
 	var phoneMotionEnabled = true
+	var shortcutsEnabled = true
 
 	private(set) var controllerName: String?
 	private var controller: GCController?
@@ -68,6 +130,7 @@ final class ControllerInput {
 	private var observers: [NSObjectProtocol] = []
 	private var touchDown = [false, false]
 	private var virtualTouchpadDown = false
+	private var shortcutTracker = ControllerShortcutTracker()
 	private var comboTimer: Timer?
 	private var lastPad = CKPadState()
 
@@ -93,6 +156,7 @@ final class ControllerInput {
 		observers.forEach(NotificationCenter.default.removeObserver)
 		observers.removeAll()
 		comboTimer?.invalidate()
+		shortcutTracker.reset()
 		motionManager.stopDeviceMotionUpdates()
 		releaseAllTouches()
 		if let controller {
@@ -114,6 +178,7 @@ final class ControllerInput {
 		guard force || next !== controller else { return }
 
 		releaseAllTouches()
+		shortcutTracker.reset()
 		if let controller {
 			restoreSystemGestures(controller)
 			controller.extendedGamepad?.valueChangedHandler = nil
@@ -196,20 +261,9 @@ final class ControllerInput {
 		var b: UInt32 = 0
 		func set(_ pressed: Bool, _ flag: CKButton) { if pressed { b |= flag.rawValue } }
 
-		set(pad.buttonA.isPressed, CK_BUTTON_CROSS)
-		set(pad.buttonB.isPressed, CK_BUTTON_MOON)
-		set(pad.buttonX.isPressed, CK_BUTTON_BOX)
-		set(pad.buttonY.isPressed, CK_BUTTON_PYRAMID)
-		set(pad.dpad.left.isPressed, CK_BUTTON_DPAD_LEFT)
-		set(pad.dpad.right.isPressed, CK_BUTTON_DPAD_RIGHT)
-		set(pad.dpad.up.isPressed, CK_BUTTON_DPAD_UP)
-		set(pad.dpad.down.isPressed, CK_BUTTON_DPAD_DOWN)
-		set(pad.leftShoulder.isPressed, CK_BUTTON_L1)
-		set(pad.rightShoulder.isPressed, CK_BUTTON_R1)
-		set(pad.leftThumbstickButton?.isPressed ?? false, CK_BUTTON_L3)
-		set(pad.rightThumbstickButton?.isPressed ?? false, CK_BUTTON_R3)
-		set(pad.buttonMenu.isPressed, CK_BUTTON_OPTIONS)
-		set(pad.buttonHome?.isPressed ?? false, CK_BUTTON_PS)
+		let l1Pressed = pad.leftShoulder.isPressed
+		let r1Pressed = pad.rightShoulder.isPressed
+		let startPressed = pad.buttonMenu.isPressed
 
 		let optionsBtn = pad.buttonOptions
 		let shareBtn = pad.buttons[GCInputButtonShare]
@@ -218,6 +272,29 @@ final class ControllerInput {
 
 		let selectPressed = primarySelectBtn?.isPressed ?? false
 		let distinctSharePressed = distinctShareBtn?.isPressed ?? false
+
+		let shortcutUpdate = shortcutTracker.update(
+			enabled: shortcutsEnabled,
+			select: selectPressed,
+			start: startPressed,
+			l1: l1Pressed,
+			r1: r1Pressed
+		)
+
+		set(pad.buttonA.isPressed, CK_BUTTON_CROSS)
+		set(pad.buttonB.isPressed, CK_BUTTON_MOON)
+		set(pad.buttonX.isPressed, CK_BUTTON_BOX)
+		set(pad.buttonY.isPressed, CK_BUTTON_PYRAMID)
+		set(pad.dpad.left.isPressed, CK_BUTTON_DPAD_LEFT)
+		set(pad.dpad.right.isPressed, CK_BUTTON_DPAD_RIGHT)
+		set(pad.dpad.up.isPressed, CK_BUTTON_DPAD_UP)
+		set(pad.dpad.down.isPressed, CK_BUTTON_DPAD_DOWN)
+		set(l1Pressed && !shortcutUpdate.suppressL1, CK_BUTTON_L1)
+		set(r1Pressed && !shortcutUpdate.suppressR1, CK_BUTTON_R1)
+		set(pad.leftThumbstickButton?.isPressed ?? false, CK_BUTTON_L3)
+		set(pad.rightThumbstickButton?.isPressed ?? false, CK_BUTTON_R3)
+		set(startPressed, CK_BUTTON_OPTIONS)
+		set(pad.buttonHome?.isPressed ?? false, CK_BUTTON_PS)
 
 		var hardwareTouchpadPressed = false
 		if let ds = pad as? GCDualSenseGamepad {
@@ -261,15 +338,28 @@ final class ControllerInput {
 		} else {
 			onPad?(state)
 		}
-		updateMenuCombo(select: selectPressed, start: pad.buttonMenu.isPressed)
+		updateMenuCombo(select: selectPressed, start: startPressed, l1: l1Pressed, r1: r1Pressed)
+		for shortcut in shortcutUpdate.triggered {
+			let action: (() -> Void)?
+			switch shortcut {
+			case .toggleFrameGen: action = onToggleFrameGen
+			case .cycleHUD: action = onCycleHUD
+			}
+			guard let action else { continue }
+			if Thread.isMainThread {
+				action()
+			} else {
+				DispatchQueue.main.async(execute: action)
+			}
+		}
 	}
 
 	private static func axis(_ v: Float) -> Int16 {
 		Int16(clamping: Int((v * 32767).rounded()))
 	}
 
-	private func updateMenuCombo(select: Bool, start: Bool) {
-		if select && start {
+	private func updateMenuCombo(select: Bool, start: Bool, l1: Bool, r1: Bool) {
+		if select && start && !l1 && !r1 {
 			guard comboTimer == nil else { return }
 			comboTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false) { [weak self] _ in
 				self?.comboTimer = nil

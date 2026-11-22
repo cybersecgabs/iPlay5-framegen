@@ -209,6 +209,7 @@ final class StreamSession {
 
 		input.selectIsTouchpad = settings.selectIsTouchpad
 		input.phoneMotionEnabled = settings.phoneMotion
+		input.shortcutsEnabled = settings.controllerShortcuts
 		input.rumble.configure(enabled: settings.rumble, intensity: Float(settings.rumbleIntensity), target: settings.rumbleTarget)
 		input.rumble.setPaused(paused)
 		input.onPad = { [weak self] pad in
@@ -271,6 +272,7 @@ final class StreamSession {
 			|| new.effectiveCodec != settings.effectiveCodec || new.hdr != settings.hdr
 		settings = new
 		input.selectIsTouchpad = new.selectIsTouchpad
+		input.shortcutsEnabled = new.controllerShortcuts
 		input.rumble.configure(enabled: new.rumble, intensity: Float(new.rumbleIntensity), target: new.rumbleTarget)
 		renderer?.setDisplayMode(new.displayMode)
 		renderer?.setZoomLevel(new.zoomLevel)

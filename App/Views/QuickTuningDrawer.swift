@@ -145,8 +145,21 @@ struct QuickTuningDrawer: View {
 						.frame(maxWidth: .infinity)
 				}
 
-				Toggle("Stats overlay", isOn: $settings.showStats)
-					.font(.subheadline)
+				HStack {
+					Text("Stats HUD")
+						.font(.subheadline)
+					Spacer()
+					Picker("Stats HUD", selection: $settings.statsOverlayMode) {
+						ForEach(StatsOverlayMode.allCases) { mode in
+							Text(mode.shortLabel).tag(mode)
+						}
+					}
+					.pickerStyle(.segmented)
+					.frame(width: 170)
+				}
+				.onChange(of: settings.statsOverlayMode) { _, new in
+					settings.showStats = new != .off
+				}
 			}
 		}
 	}
