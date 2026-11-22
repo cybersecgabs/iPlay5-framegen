@@ -83,6 +83,8 @@ final class StreamSession {
 	/// Latest controller state, so screen taps can add a touchpad click on top of it
 	@ObservationIgnored private var lastPad = CKPadState()
 	@ObservationIgnored private var extraButtons: UInt32 = 0
+	@ObservationIgnored private var screenTapWork: [Int: DispatchWorkItem] = [:]
+	@ObservationIgnored private var screenTapTouchUpWork: [Int: DispatchWorkItem] = [:]
 	@ObservationIgnored private var reconnectAttempt = 0
 	@ObservationIgnored private var reconnectWork: DispatchWorkItem?
 	@ObservationIgnored private var sessionGeneration = 0
@@ -346,6 +348,12 @@ final class StreamSession {
 		sessionGeneration &+= 1
 		statsTimer?.invalidate()
 		statsTimer = nil
+		screenTapWork.values.forEach { $0.cancel() }
+		screenTapWork.removeAll()
+		screenTapTouchUpWork.values.forEach { $0.cancel() }
+		screenTapTouchUpWork.removeAll()
+		extraButtons = 0
+		touchIDs.removeAll()
 		input.stop()
 		audio.stop()
 		if let handle {
@@ -445,6 +453,18 @@ final class StreamSession {
 	// MARK: - On-screen touchpad (main thread)
 
 	func screenTouch(_ event: ControllerInput.TouchEvent) {
+		if case .down(let slot, _, _) = event {
+			let cancelledClick = screenTapWork.removeValue(forKey: slot)
+			cancelledClick?.cancel()
+			screenTapTouchUpWork.removeValue(forKey: slot)?.cancel()
+			if cancelledClick != nil && screenTapWork.isEmpty {
+				extraButtons &= ~UInt32(CK_BUTTON_TOUCHPAD.rawValue)
+				sendPad()
+			}
+			if touchIDs[slot] != nil {
+				handleTouch(.up(slot: slot))
+			}
+		}
 		handleTouch(event)
 	}
 
@@ -462,15 +482,31 @@ final class StreamSession {
 
 	/// A quick tap on the screen: click the touchpad at the touch point, then lift the finger.
 	func screenTap(slot: Int) {
+		log.notice("Touchpad: screen tap slot=\(slot) touchID=\(self.touchIDs[slot] ?? -1)")
+		screenTapWork.removeValue(forKey: slot)?.cancel()
+		screenTapTouchUpWork.removeValue(forKey: slot)?.cancel()
+
 		let button = UInt32(CK_BUTTON_TOUCHPAD.rawValue)
 		extraButtons |= button
 		sendPad()
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+
+		let releaseWork = DispatchWorkItem { [weak self] in
 			guard let self else { return }
-			self.extraButtons &= ~button
-			self.sendPad()
-			self.handleTouch(.up(slot: slot))
+			self.screenTapWork.removeValue(forKey: slot)
+			if self.screenTapWork.isEmpty {
+				self.extraButtons &= ~button
+				self.sendPad()
+			}
+			let touchUpWork = DispatchWorkItem { [weak self] in
+				guard let self else { return }
+				self.screenTapTouchUpWork.removeValue(forKey: slot)
+				self.handleTouch(.up(slot: slot))
+			}
+			self.screenTapTouchUpWork[slot] = touchUpWork
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: touchUpWork)
 		}
+		screenTapWork[slot] = releaseWork
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.09, execute: releaseWork)
 	}
 
 	private func handleTouch(_ event: ControllerInput.TouchEvent) {

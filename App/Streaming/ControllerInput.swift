@@ -54,6 +54,159 @@ final class ControllerInput {
 		)
 	}
 
+	struct DualSenseTouchSanitizer: Equatable {
+		private var restX: [Float] = [0, 0]
+		private var restY: [Float] = [0, 0]
+		private(set) var ignoreHardwareTouchpadButtonUntilRelease = false
+
+		mutating func configureInitialState(
+			tp0: (x: Float, y: Float),
+			tp1: (x: Float, y: Float),
+			touchpadButtonPressed: Bool
+		) {
+			restX = [tp0.x, tp1.x]
+			restY = [tp0.y, tp1.y]
+			ignoreHardwareTouchpadButtonUntilRelease = touchpadButtonPressed
+		}
+
+		mutating func reset() {
+			restX = [0, 0]
+			restY = [0, 0]
+			ignoreHardwareTouchpadButtonUntilRelease = false
+		}
+
+		func isTouching(slot: Int, x: Float, y: Float, selectIsTouchpad: Bool) -> Bool {
+			guard !selectIsTouchpad, slot >= 0, slot < restX.count else { return false }
+			if x == 0 && y == 0 { return false }
+			let rx = restX[slot]
+			let ry = restY[slot]
+			if (rx != 0 || ry != 0) && abs(x - rx) < 0.0001 && abs(y - ry) < 0.0001 {
+				return false
+			}
+			return true
+		}
+
+		mutating func sanitizeHardwareTouchpadButton(rawPressed: Bool, selectIsTouchpad: Bool) -> Bool {
+			if !rawPressed {
+				ignoreHardwareTouchpadButtonUntilRelease = false
+				return false
+			}
+			if selectIsTouchpad || ignoreHardwareTouchpadButtonUntilRelease {
+				return false
+			}
+			return true
+		}
+	}
+
+	struct VirtualTouchpadStateMachine: Equatable {
+		static let touchLeadSeconds: TimeInterval = 0.02
+		static let minimumClickHoldSeconds: TimeInterval = 0.09
+		static let touchTailSeconds: TimeInterval = 0.02
+
+		enum Phase: Equatable {
+			case idle
+			case touchingBeforeClick(touchDownAt: TimeInterval, releasedEarly: Bool)
+			case clicking(clickDownAt: TimeInterval, physicalHeld: Bool)
+			case liftingTouchAfterClick(clickUpAt: TimeInterval)
+		}
+
+		struct StepResult: Equatable {
+			let touchDown: Bool
+			let touchUp: Bool
+			let clickChanged: Bool
+			let isClickActive: Bool
+			let nextTimerDelay: TimeInterval?
+
+			static let none = StepResult(touchDown: false, touchUp: false, clickChanged: false, isClickActive: false, nextTimerDelay: nil)
+		}
+
+		private(set) var phase: Phase = .idle
+
+		var isTouchDown: Bool { phase != .idle }
+
+		var isClickActive: Bool {
+			if case .clicking = phase { return true }
+			return false
+		}
+
+		mutating func setPhysicalPressed(_ pressed: Bool, now: TimeInterval) -> StepResult {
+			if pressed {
+				switch phase {
+				case .idle:
+					phase = .touchingBeforeClick(touchDownAt: now, releasedEarly: false)
+					return StepResult(touchDown: true, touchUp: false, clickChanged: false, isClickActive: false, nextTimerDelay: Self.touchLeadSeconds)
+				case .touchingBeforeClick(let t0, _):
+					phase = .touchingBeforeClick(touchDownAt: t0, releasedEarly: false)
+					return .none
+				case .clicking(let t0, _):
+					phase = .clicking(clickDownAt: t0, physicalHeld: true)
+					return StepResult(touchDown: false, touchUp: false, clickChanged: false, isClickActive: true, nextTimerDelay: nil)
+				case .liftingTouchAfterClick:
+					phase = .touchingBeforeClick(touchDownAt: now, releasedEarly: false)
+					return StepResult(touchDown: true, touchUp: true, clickChanged: false, isClickActive: false, nextTimerDelay: Self.touchLeadSeconds)
+				}
+			} else {
+				switch phase {
+				case .idle, .liftingTouchAfterClick:
+					return .none
+				case .touchingBeforeClick(let t0, _):
+					phase = .touchingBeforeClick(touchDownAt: t0, releasedEarly: true)
+					let remainingLead = max(0.001, t0 + Self.touchLeadSeconds - now)
+					return StepResult(touchDown: false, touchUp: false, clickChanged: false, isClickActive: false, nextTimerDelay: remainingLead)
+				case .clicking(let clickDownAt, _):
+					let remaining = (clickDownAt + Self.minimumClickHoldSeconds) - now
+					if remaining > 0.001 {
+						phase = .clicking(clickDownAt: clickDownAt, physicalHeld: false)
+						return StepResult(touchDown: false, touchUp: false, clickChanged: false, isClickActive: true, nextTimerDelay: remaining)
+					} else {
+						phase = .liftingTouchAfterClick(clickUpAt: now)
+						return StepResult(touchDown: false, touchUp: false, clickChanged: true, isClickActive: false, nextTimerDelay: Self.touchTailSeconds)
+					}
+				}
+			}
+		}
+
+		mutating func tick(now: TimeInterval) -> StepResult {
+			switch phase {
+			case .idle:
+				return .none
+			case .touchingBeforeClick(_, let releasedEarly):
+				phase = .clicking(clickDownAt: now, physicalHeld: !releasedEarly)
+				return StepResult(
+					touchDown: false,
+					touchUp: false,
+					clickChanged: true,
+					isClickActive: true,
+					nextTimerDelay: releasedEarly ? Self.minimumClickHoldSeconds : nil
+				)
+			case .clicking(_, let physicalHeld):
+				guard !physicalHeld else {
+					return StepResult(touchDown: false, touchUp: false, clickChanged: false, isClickActive: true, nextTimerDelay: nil)
+				}
+				phase = .liftingTouchAfterClick(clickUpAt: now)
+				return StepResult(touchDown: false, touchUp: false, clickChanged: true, isClickActive: false, nextTimerDelay: Self.touchTailSeconds)
+			case .liftingTouchAfterClick:
+				phase = .idle
+				return StepResult(touchDown: false, touchUp: true, clickChanged: false, isClickActive: false, nextTimerDelay: nil)
+			}
+		}
+
+		mutating func cancelIfPendingBeforeClick() -> StepResult {
+			guard case .touchingBeforeClick = phase else {
+				return StepResult(touchDown: false, touchUp: false, clickChanged: false, isClickActive: isClickActive, nextTimerDelay: nil)
+			}
+			phase = .idle
+			return StepResult(touchDown: false, touchUp: true, clickChanged: false, isClickActive: false, nextTimerDelay: nil)
+		}
+
+		mutating func reset() -> StepResult {
+			let wasTouchDown = isTouchDown
+			let wasClicking = isClickActive
+			phase = .idle
+			return StepResult(touchDown: false, touchUp: wasTouchDown, clickChanged: wasClicking, isClickActive: false, nextTimerDelay: nil)
+		}
+	}
+
 	enum ControllerShortcut: Equatable {
 		case toggleFrameGen
 		case cycleHUD
@@ -115,7 +268,16 @@ final class ControllerInput {
 
 	var selectIsTouchpad = false {
 		didSet {
-			if selectIsTouchpad != oldValue, let pad = controller?.extendedGamepad {
+			guard selectIsTouchpad != oldValue else { return }
+			if selectIsTouchpad {
+				for slot in 0..<touchDown.count where touchDown[slot] {
+					touchDown[slot] = false
+					onTouch?(.up(slot: slot))
+				}
+			} else {
+				resetVirtualTouchpad()
+			}
+			if let pad = controller?.extendedGamepad {
 				padChanged(pad)
 			}
 		}
@@ -129,7 +291,11 @@ final class ControllerInput {
 	private let motionQueue = OperationQueue()
 	private var observers: [NSObjectProtocol] = []
 	private var touchDown = [false, false]
-	private var virtualTouchpadDown = false
+	private var dualSenseSanitizer = DualSenseTouchSanitizer()
+	private var virtualTouchpad = VirtualTouchpadStateMachine()
+	private var virtualTouchpadWork: DispatchWorkItem?
+	private var lastLoggedSelectPressed = false
+	private var lastLoggedHwTouchpadPressed = false
 	private var shortcutTracker = ControllerShortcutTracker()
 	private var comboTimer: Timer?
 	private var lastPad = CKPadState()
@@ -194,14 +360,30 @@ final class ControllerInput {
 		}
 		let profileKind: String
 		let hasTouchpadBtn: Bool
+		var initialTpSummary = ""
 		if let ds = pad as? GCDualSenseGamepad {
 			profileKind = "DualSense"
 			let tpBtn: GCControllerButtonInput? = ds.touchpadButton
 			hasTouchpadBtn = tpBtn != nil
+			let tp0 = (ds.touchpadPrimary.xAxis.value, ds.touchpadPrimary.yAxis.value)
+			let tp1 = (ds.touchpadSecondary.xAxis.value, ds.touchpadSecondary.yAxis.value)
+			let rawTpPressed = tpBtn?.isPressed ?? false
+			dualSenseSanitizer.configureInitialState(tp0: tp0, tp1: tp1, touchpadButtonPressed: rawTpPressed)
+			initialTpSummary = String(
+				format: ", tpPressed=%@, tp0=(%.2f,%.2f), tp1=(%.2f,%.2f)",
+				rawTpPressed ? "true" : "false",
+				tp0.0,
+				tp0.1,
+				tp1.0,
+				tp1.1
+			)
 		} else if let ds4 = pad as? GCDualShockGamepad {
 			profileKind = "DualShock 4"
 			let tpBtn: GCControllerButtonInput? = ds4.touchpadButton
 			hasTouchpadBtn = tpBtn != nil
+			let rawTpPressed = tpBtn?.isPressed ?? false
+			dualSenseSanitizer.configureInitialState(tp0: (0, 0), tp1: (0, 0), touchpadButtonPressed: rawTpPressed)
+			initialTpSummary = ", tpPressed=\(rawTpPressed)"
 		} else if pad is GCXboxGamepad {
 			profileKind = "Xbox"
 			hasTouchpadBtn = false
@@ -209,9 +391,11 @@ final class ControllerInput {
 			profileKind = "ExtendedGamepad"
 			hasTouchpadBtn = false
 		}
+		lastLoggedSelectPressed = false
+		lastLoggedHwTouchpadPressed = false
 		let hasOptionsBtn = pad.buttonOptions != nil
 		let hasShareBtn = pad.buttons[GCInputButtonShare] != nil
-		log.notice("Using controller: \(next.vendorName ?? "?", privacy: .public) (\(next.productCategory, privacy: .public), profile=\(profileKind, privacy: .public), options=\(hasOptionsBtn), share=\(hasShareBtn), touchpadBtn=\(hasTouchpadBtn))")
+		log.notice("Using controller: \(next.vendorName ?? "?", privacy: .public) (\(next.productCategory, privacy: .public), profile=\(profileKind, privacy: .public), options=\(hasOptionsBtn), share=\(hasShareBtn), touchpadBtn=\(hasTouchpadBtn)\(initialTpSummary, privacy: .public))")
 
 		claimSystemGestures(next)
 		pad.valueChangedHandler = { [weak self] pad, _ in self?.padChanged(pad) }
@@ -232,11 +416,22 @@ final class ControllerInput {
 		padChanged(pad)
 	}
 
-	private func releaseAllTouches() {
-		if virtualTouchpadDown {
-			virtualTouchpadDown = false
+	private func resetVirtualTouchpad() {
+		virtualTouchpadWork?.cancel()
+		virtualTouchpadWork = nil
+		let step = virtualTouchpad.reset()
+		if step.clickChanged {
+			lastPad.buttons &= ~UInt32(CK_BUTTON_TOUCHPAD.rawValue)
+			onPad?(lastPad)
+		}
+		if step.touchUp {
 			onTouch?(.up(slot: Self.virtualTouchpadSlot))
 		}
+	}
+
+	private func releaseAllTouches() {
+		resetVirtualTouchpad()
+		dualSenseSanitizer.reset()
 		for slot in 0..<touchDown.count where touchDown[slot] {
 			touchDown[slot] = false
 			onTouch?(.up(slot: slot))
@@ -299,11 +494,13 @@ final class ControllerInput {
 		var hardwareTouchpadPressed = false
 		if let ds = pad as? GCDualSenseGamepad {
 			let tpBtn: GCControllerButtonInput? = ds.touchpadButton
-			hardwareTouchpadPressed = tpBtn?.isPressed ?? false
+			let rawTpPressed = tpBtn?.isPressed ?? false
+			hardwareTouchpadPressed = dualSenseSanitizer.sanitizeHardwareTouchpadButton(rawPressed: rawTpPressed, selectIsTouchpad: selectIsTouchpad)
 			dualSenseTouch(ds)
 		} else if let ds4 = pad as? GCDualShockGamepad {
 			let tpBtn: GCControllerButtonInput? = ds4.touchpadButton
-			hardwareTouchpadPressed = tpBtn?.isPressed ?? false
+			let rawTpPressed = tpBtn?.isPressed ?? false
+			hardwareTouchpadPressed = dualSenseSanitizer.sanitizeHardwareTouchpadButton(rawPressed: rawTpPressed, selectIsTouchpad: selectIsTouchpad)
 		}
 
 		let hasPhysicalTouchContact = touchDown[0] || touchDown[1]
@@ -315,7 +512,39 @@ final class ControllerInput {
 			selectIsTouchpad: selectIsTouchpad
 		)
 		set(resolved.shareButtonPressed, CK_BUTTON_SHARE)
-		set(resolved.touchpadButtonPressed, CK_BUTTON_TOUCHPAD)
+
+		let wantsVirtualClick = resolved.needsVirtualCenterTouch
+		let inChord = !shortcutUpdate.triggered.isEmpty || (selectPressed && startPressed)
+		if inChord {
+			let cancelResult = virtualTouchpad.cancelIfPendingBeforeClick()
+			if cancelResult.nextTimerDelay == nil && !virtualTouchpad.isTouchDown && !virtualTouchpad.isClickActive {
+				virtualTouchpadWork?.cancel()
+				virtualTouchpadWork = nil
+			}
+			if cancelResult.touchUp {
+				onTouch?(.up(slot: Self.virtualTouchpadSlot))
+			}
+		} else {
+			let step = virtualTouchpad.setPhysicalPressed(wantsVirtualClick, now: CACurrentMediaTime())
+			if step.touchUp {
+				onTouch?(.up(slot: Self.virtualTouchpadSlot))
+			}
+			if step.touchDown {
+				onTouch?(.down(slot: Self.virtualTouchpadSlot, x: Self.virtualTouchpadCenter.x, y: Self.virtualTouchpadCenter.y))
+			}
+			if let delay = step.nextTimerDelay {
+				scheduleVirtualTouchpadTick(after: delay)
+			}
+		}
+
+		let hardwareDirectClick = hardwareTouchpadPressed && hasPhysicalTouchContact
+		set(hardwareDirectClick || virtualTouchpad.isClickActive, CK_BUTTON_TOUCHPAD)
+
+		if selectPressed != lastLoggedSelectPressed || hardwareTouchpadPressed != lastLoggedHwTouchpadPressed {
+			lastLoggedSelectPressed = selectPressed
+			lastLoggedHwTouchpadPressed = hardwareTouchpadPressed
+			log.notice("Touchpad input: select=\(selectPressed) hwTp=\(hardwareTouchpadPressed) selectIsTp=\(self.selectIsTouchpad) touchDown=\(self.virtualTouchpad.isTouchDown) click=\(self.virtualTouchpad.isClickActive)")
+		}
 
 		var state = CKPadState()
 		state.buttons = b
@@ -327,17 +556,7 @@ final class ControllerInput {
 		state.right_y = Self.axis(-pad.rightThumbstick.yAxis.value)
 
 		lastPad = state
-		if resolved.needsVirtualCenterTouch && !virtualTouchpadDown {
-			virtualTouchpadDown = true
-			onTouch?(.down(slot: Self.virtualTouchpadSlot, x: Self.virtualTouchpadCenter.x, y: Self.virtualTouchpadCenter.y))
-			onPad?(state)
-		} else if !resolved.needsVirtualCenterTouch && virtualTouchpadDown {
-			onPad?(state)
-			virtualTouchpadDown = false
-			onTouch?(.up(slot: Self.virtualTouchpadSlot))
-		} else {
-			onPad?(state)
-		}
+		onPad?(state)
 		updateMenuCombo(select: selectPressed, start: startPressed, l1: l1Pressed, r1: r1Pressed)
 		for shortcut in shortcutUpdate.triggered {
 			let action: (() -> Void)?
@@ -371,13 +590,44 @@ final class ControllerInput {
 		}
 	}
 
-	// MARK: - DualSense touchpad
+	// MARK: - Virtual & DualSense touchpad
+
+	private func scheduleVirtualTouchpadTick(after delay: TimeInterval) {
+		virtualTouchpadWork?.cancel()
+		let work = DispatchWorkItem { [weak self] in
+			self?.handleVirtualTouchpadTick()
+		}
+		virtualTouchpadWork = work
+		DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+	}
+
+	private func handleVirtualTouchpadTick() {
+		virtualTouchpadWork = nil
+		let step = virtualTouchpad.tick(now: CACurrentMediaTime())
+		if step.clickChanged {
+			if step.isClickActive {
+				lastPad.buttons |= UInt32(CK_BUTTON_TOUCHPAD.rawValue)
+			} else {
+				lastPad.buttons &= ~UInt32(CK_BUTTON_TOUCHPAD.rawValue)
+			}
+			onPad?(lastPad)
+		}
+		if step.touchUp {
+			onTouch?(.up(slot: Self.virtualTouchpadSlot))
+		}
+		if step.touchDown {
+			onTouch?(.down(slot: Self.virtualTouchpadSlot, x: Self.virtualTouchpadCenter.x, y: Self.virtualTouchpadCenter.y))
+		}
+		if let nextDelay = step.nextTimerDelay {
+			scheduleVirtualTouchpadTick(after: nextDelay)
+		}
+	}
 
 	private func dualSenseTouch(_ ds: GCDualSenseGamepad) {
 		for (slot, pad) in [ds.touchpadPrimary, ds.touchpadSecondary].enumerated() {
 			let x = pad.xAxis.value
 			let y = pad.yAxis.value
-			let touching = x != 0 || y != 0
+			let touching = dualSenseSanitizer.isTouching(slot: slot, x: x, y: y, selectIsTouchpad: selectIsTouchpad)
 			let px = UInt16(clamping: Int(((x + 1) / 2 * 1919).rounded()))
 			let py = UInt16(clamping: Int(((1 - y) / 2 * 1079).rounded()))
 			if touching && !touchDown[slot] {

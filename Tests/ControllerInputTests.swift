@@ -211,4 +211,96 @@ final class ControllerInputTests: XCTestCase {
 		XCTAssertFalse(disabled.suppressL1)
 		XCTAssertFalse(disabled.suppressR1)
 	}
+
+	func testDualSenseTouchSanitizerGuardsSpoofedRestingState() {
+		var sanitizer = ControllerInput.DualSenseTouchSanitizer()
+
+		// Real DualSense resting at (0,0) allows genuine touches and hardware clicks
+		sanitizer.configureInitialState(tp0: (0, 0), tp1: (0, 0), touchpadButtonPressed: false)
+		XCTAssertFalse(sanitizer.isTouching(slot: 0, x: 0, y: 0, selectIsTouchpad: false))
+		XCTAssertTrue(sanitizer.isTouching(slot: 0, x: -0.25, y: 0.4, selectIsTouchpad: false))
+		XCTAssertTrue(sanitizer.sanitizeHardwareTouchpadButton(rawPressed: true, selectIsTouchpad: false))
+
+		// Spoofed DualSense (like GameSir-G8) resting at non-zero (-1, 1) with stuck touchpadButton
+		sanitizer.configureInitialState(tp0: (-1, 1), tp1: (-1, 1), touchpadButtonPressed: true)
+		XCTAssertFalse(sanitizer.isTouching(slot: 0, x: -1, y: 1, selectIsTouchpad: false))
+		XCTAssertFalse(sanitizer.isTouching(slot: 1, x: -1, y: 1, selectIsTouchpad: false))
+		XCTAssertFalse(sanitizer.sanitizeHardwareTouchpadButton(rawPressed: true, selectIsTouchpad: false))
+		// Once released, genuine hardware clicks work again (when selectIsTouchpad is false)
+		XCTAssertFalse(sanitizer.sanitizeHardwareTouchpadButton(rawPressed: false, selectIsTouchpad: false))
+		XCTAssertTrue(sanitizer.sanitizeHardwareTouchpadButton(rawPressed: true, selectIsTouchpad: false))
+
+		// selectIsTouchpad == true ignores both spoofed axes and hardware touchpad button
+		sanitizer.configureInitialState(tp0: (0, 0), tp1: (0, 0), touchpadButtonPressed: false)
+		XCTAssertFalse(sanitizer.isTouching(slot: 0, x: 0.5, y: 0.5, selectIsTouchpad: true))
+		XCTAssertFalse(sanitizer.sanitizeHardwareTouchpadButton(rawPressed: true, selectIsTouchpad: true))
+	}
+
+	func testVirtualTouchpadStateMachineShortPulseAndHold() {
+		var vm = ControllerInput.VirtualTouchpadStateMachine()
+
+		// 1. Ultra-short pulse (pressed at t=0, released at t=0.005) completes full touch -> 90ms click -> touch up
+		let down = vm.setPhysicalPressed(true, now: 0.0)
+		XCTAssertTrue(down.touchDown)
+		XCTAssertFalse(down.isClickActive)
+		XCTAssertEqual(down.nextTimerDelay ?? -1, 0.02, accuracy: 0.0001)
+
+		let earlyRelease = vm.setPhysicalPressed(false, now: 0.005)
+		XCTAssertFalse(earlyRelease.touchUp)
+		XCTAssertFalse(earlyRelease.clickChanged)
+		XCTAssertEqual(earlyRelease.nextTimerDelay ?? -1, 0.015, accuracy: 0.0001)
+
+		let leadTick = vm.tick(now: 0.020)
+		XCTAssertTrue(leadTick.clickChanged)
+		XCTAssertTrue(leadTick.isClickActive)
+		XCTAssertEqual(leadTick.nextTimerDelay ?? -1, 0.09, accuracy: 0.0001)
+
+		let clickUpTick = vm.tick(now: 0.110)
+		XCTAssertTrue(clickUpTick.clickChanged)
+		XCTAssertFalse(clickUpTick.isClickActive)
+		XCTAssertFalse(clickUpTick.touchUp)
+		XCTAssertEqual(clickUpTick.nextTimerDelay ?? -1, 0.02, accuracy: 0.0001)
+
+		let tailTick = vm.tick(now: 0.130)
+		XCTAssertTrue(tailTick.touchUp)
+		XCTAssertNil(tailTick.nextTimerDelay)
+		XCTAssertEqual(vm.phase, .idle)
+
+		// 2. Normal tap released mid-click (t=0.050) extends remaining hold to 0.060s
+		_ = vm.setPhysicalPressed(true, now: 1.000)
+		_ = vm.tick(now: 1.020)
+		let midRelease = vm.setPhysicalPressed(false, now: 1.050)
+		XCTAssertTrue(midRelease.isClickActive)
+		XCTAssertFalse(midRelease.clickChanged)
+		XCTAssertEqual(midRelease.nextTimerDelay ?? -1, 0.060, accuracy: 0.0001)
+		_ = vm.tick(now: 1.110)
+		let endTail = vm.tick(now: 1.130)
+		XCTAssertTrue(endTail.touchUp)
+
+		// 3. Long hold (t=2.000 to t=3.200) holds continuously and releases immediately on release
+		_ = vm.setPhysicalPressed(true, now: 2.000)
+		let longLead = vm.tick(now: 2.020)
+		XCTAssertNil(longLead.nextTimerDelay)
+		XCTAssertTrue(vm.isClickActive)
+		let longRelease = vm.setPhysicalPressed(false, now: 3.200)
+		XCTAssertTrue(longRelease.clickChanged)
+		XCTAssertFalse(longRelease.isClickActive)
+		XCTAssertEqual(longRelease.nextTimerDelay ?? -1, 0.02, accuracy: 0.0001)
+		_ = vm.tick(now: 3.220)
+
+		// 4. Cancel pending before click (for Select+Start / Select+R1 chords) & reset
+		_ = vm.setPhysicalPressed(true, now: 4.000)
+		let cancelled = vm.cancelIfPendingBeforeClick()
+		XCTAssertTrue(cancelled.touchUp)
+		XCTAssertFalse(vm.isClickActive)
+		XCTAssertEqual(vm.phase, .idle)
+
+		_ = vm.setPhysicalPressed(true, now: 5.000)
+		_ = vm.tick(now: 5.020)
+		let resetResult = vm.reset()
+		XCTAssertTrue(resetResult.clickChanged)
+		XCTAssertFalse(resetResult.isClickActive)
+		XCTAssertTrue(resetResult.touchUp)
+		XCTAssertEqual(vm.phase, .idle)
+	}
 }

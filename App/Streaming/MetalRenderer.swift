@@ -720,8 +720,8 @@ final class StreamMetalView: UIView {
 
 	/// Hot corner size in points, at the top-right and top-left of the view
 	static let cornerSize = CGSize(width: 140, height: 90)
-	private static let tapMaxDuration: TimeInterval = 0.25
-	private static let tapMaxMovement: CGFloat = 12
+	private static let tapMaxDuration: TimeInterval = 0.35
+	private static let tapMaxMovement: CGFloat = 20
 
 	private struct Tracked {
 		let slot: Int
