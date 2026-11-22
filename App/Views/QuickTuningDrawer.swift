@@ -118,16 +118,30 @@ struct QuickTuningDrawer: View {
 	private var displayCard: some View {
 		drawerCard("Display") {
 			VStack(alignment: .leading, spacing: 10) {
-				HStack {
-					Text("Picture")
-						.font(.subheadline)
-					Spacer()
-					Picker("Picture", selection: $settings.displayMode) {
-						Text("Fit").tag(DisplayMode.fit)
-						Text("Zoom").tag(DisplayMode.zoom)
-					}
-					.pickerStyle(.segmented)
-					.frame(width: 130)
+				sliderRow(
+					title: "Zoom",
+					valueText: formattedZoom(settings.zoomLevel),
+					value: $settings.zoomLevel,
+					range: 0.0...1.0,
+					step: 0.05
+				)
+				.onChange(of: settings.zoomLevel) { _, new in
+					settings.displayMode = new >= 0.5 ? .zoom : .fit
+				}
+
+				HStack(spacing: 8) {
+					Button("Fit") { settings.zoomLevel = 0.0 }
+						.buttonStyle(.bordered)
+						.controlSize(.mini)
+						.frame(maxWidth: .infinity)
+					Button("50%") { settings.zoomLevel = 0.5 }
+						.buttonStyle(.bordered)
+						.controlSize(.mini)
+						.frame(maxWidth: .infinity)
+					Button("Fill") { settings.zoomLevel = 1.0 }
+						.buttonStyle(.bordered)
+						.controlSize(.mini)
+						.frame(maxWidth: .infinity)
 				}
 
 				Toggle("Stats overlay", isOn: $settings.showStats)
@@ -137,7 +151,7 @@ struct QuickTuningDrawer: View {
 	}
 
 	private var colorCard: some View {
-		drawerCard("Color") {
+		drawerCard("Color & Sharpening") {
 			VStack(alignment: .leading, spacing: 10) {
 				sliderRow(
 					title: "Brightness",
@@ -165,6 +179,13 @@ struct QuickTuningDrawer: View {
 					valueText: String(format: "%.2f", settings.colorAdjustments.gamma),
 					value: $settings.colorAdjustments.gamma,
 					range: 0.70...1.50,
+					step: 0.05
+				)
+				sliderRow(
+					title: "Sharpness (CAS)",
+					valueText: "\(Int((settings.colorAdjustments.sharpness * 100).rounded()))%",
+					value: $settings.colorAdjustments.sharpness,
+					range: 0.00...1.00,
 					step: 0.05
 				)
 
@@ -251,5 +272,12 @@ struct QuickTuningDrawer: View {
 	private func formattedBrightness(_ value: Double) -> String {
 		let pct = Int((value * 100).rounded())
 		return pct > 0 ? "+\(pct)%" : "\(pct)%"
+	}
+
+	private func formattedZoom(_ value: Double) -> String {
+		let pct = Int((value * 100).rounded())
+		if pct == 0 { return "Fit" }
+		if pct == 100 { return "Fill" }
+		return "\(pct)%"
 	}
 }

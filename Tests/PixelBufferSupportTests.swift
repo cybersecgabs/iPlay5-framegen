@@ -123,6 +123,68 @@ final class PixelBufferSupportTests: XCTestCase {
 		)
 	}
 
+	func testContinuousZoomGeometryAndUpscaleSizeForIPhone17Pro() {
+		let iphone17ProLandscape = CGSize(width: 2622, height: 1206)
+
+		let fitGeo = PixelBufferSupport.computeViewportGeometry(
+			videoWidth: 1920,
+			videoHeight: 1080,
+			drawableSize: iphone17ProLandscape,
+			zoomLevel: 0.0
+		)
+		XCTAssertEqual(fitGeo.uvSize.x, 1.0, accuracy: 0.0001)
+		XCTAssertEqual(fitGeo.uvSize.y, 1.0, accuracy: 0.0001)
+		XCTAssertEqual(fitGeo.ndcScale.y, 1.0, accuracy: 0.0001)
+		XCTAssertLessThan(fitGeo.ndcScale.x, 1.0)
+
+		let midGeo = PixelBufferSupport.computeViewportGeometry(
+			videoWidth: 1920,
+			videoHeight: 1080,
+			drawableSize: iphone17ProLandscape,
+			zoomLevel: 0.5
+		)
+		XCTAssertLessThan(midGeo.ndcScale.x, 1.0)
+		XCTAssertGreaterThan(midGeo.ndcScale.x, fitGeo.ndcScale.x)
+		XCTAssertEqual(midGeo.ndcScale.y, 1.0, accuracy: 0.0001)
+		XCTAssertEqual(midGeo.uvSize.x, 1.0, accuracy: 0.0001)
+		XCTAssertLessThan(midGeo.uvSize.y, 1.0)
+		XCTAssertGreaterThan(midGeo.uvOrigin.y, 0.0)
+
+		let midSize = PixelBufferSupport.computeUpscaleTargetSize(
+			inputWidth: 1920,
+			inputHeight: 1080,
+			drawableSize: iphone17ProLandscape,
+			zoomLevel: 0.5
+		)
+		XCTAssertEqual(midSize?.width, 2384)
+		XCTAssertEqual(midSize?.height, 1340)
+
+		let fillGeo = PixelBufferSupport.computeViewportGeometry(
+			videoWidth: 1920,
+			videoHeight: 1080,
+			drawableSize: iphone17ProLandscape,
+			zoomLevel: 1.0
+		)
+		XCTAssertEqual(fillGeo.ndcScale.x, 1.0, accuracy: 0.0001)
+		XCTAssertEqual(fillGeo.ndcScale.y, 1.0, accuracy: 0.0001)
+
+		// Clamping out-of-range zoom levels matches 0.0 and 1.0
+		let under = PixelBufferSupport.computeViewportGeometry(
+			videoWidth: 1920,
+			videoHeight: 1080,
+			drawableSize: iphone17ProLandscape,
+			zoomLevel: -0.5
+		)
+		let over = PixelBufferSupport.computeViewportGeometry(
+			videoWidth: 1920,
+			videoHeight: 1080,
+			drawableSize: iphone17ProLandscape,
+			zoomLevel: 1.5
+		)
+		XCTAssertEqual(under.scale, fitGeo.scale, accuracy: 0.0001)
+		XCTAssertEqual(over.scale, fillGeo.scale, accuracy: 0.0001)
+	}
+
 	func testBufferCompatibilityCheck() {
 		var pb: CVPixelBuffer?
 		let attrs: [CFString: Any] = [

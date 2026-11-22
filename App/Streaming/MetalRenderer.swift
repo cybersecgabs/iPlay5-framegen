@@ -22,7 +22,7 @@ private struct RenderUniforms {
 	var saturation: Float
 	var gamma: Float
 	var colorAdjust: Int32
-	var _pad: Int32 = 0
+	var sharpness: Float
 }
 
 /// Must match BlitUniforms in Shaders.metal
@@ -30,6 +30,7 @@ private struct BlitUniforms {
 	var ndcScale: SIMD2<Float>
 	var uvOrigin: SIMD2<Float>
 	var uvSize: SIMD2<Float>
+	var texSize: SIMD2<Float>
 	var transferMode: Int32
 	var colorAdjust: Int32
 	var brightness: Float
@@ -37,7 +38,7 @@ private struct BlitUniforms {
 	var saturation: Float
 	var gamma: Float
 	var bt2020: Int32
-	var _pad: Int32 = 0
+	var sharpness: Float
 }
 
 struct RendererSnapshot: Equatable {
@@ -73,6 +74,7 @@ final class MetalRenderer {
 	private var drawableSize: CGSize = .zero
 	private var hdrOutput = false
 	private var displayMode: DisplayMode = .fit
+	private var zoomLevel: Double = 0.0
 	private var upscalingMode: UpscalingMode = .metalFX
 	private var colorAdjustments: ColorAdjustments = .neutral
 	private var paused = false
@@ -167,12 +169,20 @@ final class MetalRenderer {
 		applyOutputMode(to: layer)
 	}
 
-	func configure(hdr: Bool, displayMode: DisplayMode, upscalingMode: UpscalingMode, colorAdjustments: ColorAdjustments = .neutral) {
+	func configure(
+		hdr: Bool,
+		displayMode: DisplayMode,
+		upscalingMode: UpscalingMode,
+		zoomLevel: Double? = nil,
+		colorAdjustments: ColorAdjustments = .neutral
+	) {
 		let clampedColor = colorAdjustments.clamped
+		let resolvedZoom = min(max(zoomLevel ?? (displayMode == .zoom ? 1.0 : 0.0), 0.0), 1.0)
 		let changed = lock.withLock { () -> Bool in
 			let changed = self.hdrOutput != hdr
 			self.hdrOutput = hdr
 			self.displayMode = displayMode
+			self.zoomLevel = resolvedZoom
 			self.upscalingMode = upscalingMode
 			self.colorAdjustments = clampedColor
 			if upscalingMode != .metalFX {
@@ -186,7 +196,18 @@ final class MetalRenderer {
 	}
 
 	func setDisplayMode(_ mode: DisplayMode) {
-		lock.withLock { displayMode = mode }
+		lock.withLock {
+			displayMode = mode
+			zoomLevel = mode == .zoom ? 1.0 : 0.0
+		}
+	}
+
+	func setZoomLevel(_ zoom: Double) {
+		let clamped = min(max(zoom, 0.0), 1.0)
+		lock.withLock {
+			zoomLevel = clamped
+			displayMode = clamped >= 0.5 ? .zoom : .fit
+		}
 	}
 
 	func setColorAdjustments(_ adjustments: ColorAdjustments) {
@@ -228,7 +249,7 @@ final class MetalRenderer {
 		let layer = self.layer
 		let target = drawableSize
 		let hdr = hdrOutput
-		let mode = displayMode
+		let zoom = zoomLevel
 		let upscaling = upscalingMode
 		let color = colorAdjustments
 		let paused = self.paused
@@ -242,7 +263,7 @@ final class MetalRenderer {
 		CVMetalTextureCacheFlush(cache, 0)
 
 		if !CVPixelBufferIsPlanar(pixelBuffer) {
-			displayPackedBuffer(pixelBuffer, layer: layer, target: target, mode: mode, upscaling: upscaling, color: color, cache: cache)
+			displayPackedBuffer(pixelBuffer, layer: layer, target: target, zoom: zoom, upscaling: upscaling, color: color, cache: cache)
 			return
 		}
 
@@ -273,15 +294,20 @@ final class MetalRenderer {
 		// Fit / zoom geometry
 		let videoW = lumaTex.width
 		let videoH = lumaTex.height
-		let (ndcScale, uvOrigin, uvSize, scale) = computeGeometry(videoW: videoW, videoH: videoH, target: target, mode: mode)
+		let geo = PixelBufferSupport.computeViewportGeometry(videoWidth: videoW, videoHeight: videoH, drawableSize: target, zoomLevel: zoom)
+		let ndcScale = geo.ndcScale
+		let uvOrigin = geo.uvOrigin
+		let uvSize = geo.uvSize
+		let scale = geo.scale
 
 		guard let drawable = layer.nextDrawable(), let commandBuffer = queue.makeCommandBuffer() else { return }
 		let drawableFormat = drawable.texture.pixelFormat
-		let colorEnabled: Int32 = color.isNeutral ? 0 : 1
+		let colorEnabled: Int32 = color.hasColorGrading ? 1 : 0
 		let brightness = Float(color.brightness)
 		let contrast = Float(color.contrast)
 		let saturation = Float(color.saturation)
 		let gamma = Float(color.gamma)
+		let sharpness = Float(color.sharpness)
 
 		#if !targetEnvironment(simulator)
 		if upscaling == .metalFX,
@@ -290,7 +316,7 @@ final class MetalRenderer {
 				inputWidth: videoW,
 				inputHeight: videoH,
 				drawableSize: target,
-				displayMode: mode
+				zoomLevel: zoom
 			)
 		{
 			let resources = ensureMetalFXResources(
@@ -314,7 +340,8 @@ final class MetalRenderer {
 					contrast: contrast,
 					saturation: saturation,
 					gamma: gamma,
-					colorAdjust: colorEnabled
+					colorAdjust: colorEnabled,
+					sharpness: 0
 				)
 				let pass1 = MTLRenderPassDescriptor()
 				pass1.colorAttachments[0].texture = inTex
@@ -339,13 +366,15 @@ final class MetalRenderer {
 					ndcScale: ndcScale,
 					uvOrigin: uvOrigin,
 					uvSize: uvSize,
+					texSize: SIMD2(Float(outTex.width), Float(outTex.height)),
 					transferMode: 0,
 					colorAdjust: 0,
 					brightness: 0,
 					contrast: 1,
 					saturation: 1,
 					gamma: 1,
-					bt2020: 0
+					bt2020: 0,
+					sharpness: sharpness
 				)
 				let pass3 = MTLRenderPassDescriptor()
 				pass3.colorAttachments[0].texture = drawable.texture
@@ -395,7 +424,8 @@ final class MetalRenderer {
 			contrast: contrast,
 			saturation: saturation,
 			gamma: gamma,
-			colorAdjust: colorEnabled
+			colorAdjust: colorEnabled,
+			sharpness: sharpness
 		)
 
 		let pass = MTLRenderPassDescriptor()
@@ -453,7 +483,7 @@ final class MetalRenderer {
 		_ pixelBuffer: CVPixelBuffer,
 		layer: CAMetalLayer,
 		target: CGSize,
-		mode: DisplayMode,
+		zoom: Double,
 		upscaling: UpscalingMode,
 		color: ColorAdjustments,
 		cache: CVMetalTextureCache
@@ -477,7 +507,10 @@ final class MetalRenderer {
 
 		let videoW = srcTex.width
 		let videoH = srcTex.height
-		let (ndcScale, uvOrigin, uvSize, _) = computeGeometry(videoW: videoW, videoH: videoH, target: target, mode: mode)
+		let geo = PixelBufferSupport.computeViewportGeometry(videoWidth: videoW, videoHeight: videoH, drawableSize: target, zoomLevel: zoom)
+		let ndcScale = geo.ndcScale
+		let uvOrigin = geo.uvOrigin
+		let uvSize = geo.uvSize
 		let drawableFormat = drawable.texture.pixelFormat
 
 		var texToBlit: MTLTexture = srcTex
@@ -497,7 +530,7 @@ final class MetalRenderer {
 				inputWidth: videoW,
 				inputHeight: videoH,
 				drawableSize: target,
-				displayMode: mode
+				zoomLevel: zoom
 			)
 		{
 			let res = ensureMetalFXResources(
@@ -525,19 +558,21 @@ final class MetalRenderer {
 		#endif
 
 		let blitTransferMode: Int32 = (drawableFormat == .bgr10a2Unorm && mtlFormat == .bgra8Unorm) ? 1 : 0
-		let colorEnabled: Int32 = color.isNeutral ? 0 : 1
+		let colorEnabled: Int32 = color.hasColorGrading ? 1 : 0
 		let isBT2020: Int32 = (drawableFormat == .bgr10a2Unorm && blitTransferMode == 0) ? 1 : 0
 		var blitUniforms = BlitUniforms(
 			ndcScale: ndcScale,
 			uvOrigin: uvOrigin,
 			uvSize: uvSize,
+			texSize: SIMD2(Float(texToBlit.width), Float(texToBlit.height)),
 			transferMode: blitTransferMode,
 			colorAdjust: colorEnabled,
 			brightness: Float(color.brightness),
 			contrast: Float(color.contrast),
 			saturation: Float(color.saturation),
 			gamma: Float(color.gamma),
-			bt2020: isBT2020
+			bt2020: isBT2020,
+			sharpness: Float(color.sharpness)
 		)
 		let pass = MTLRenderPassDescriptor()
 		pass.colorAttachments[0].texture = drawable.texture
@@ -556,28 +591,6 @@ final class MetalRenderer {
 		commandBuffer.present(drawable)
 		commandBuffer.commit()
 		recordPresentation(upscaler: label, fallback: nil, inW: videoW, inH: videoH, outW: outW, outH: outH)
-	}
-
-	private func computeGeometry(
-		videoW: Int,
-		videoH: Int,
-		target: CGSize,
-		mode: DisplayMode
-	) -> (ndcScale: SIMD2<Float>, uvOrigin: SIMD2<Float>, uvSize: SIMD2<Float>, scale: Float) {
-		let fw = Float(videoW)
-		let fh = Float(videoH)
-		let tw = Float(target.width)
-		let th = Float(target.height)
-		let fitScale = min(tw / fw, th / fh)
-		let zoomScale = max(tw / fw, th / fh)
-		let scale = mode == .fit ? fitScale : zoomScale
-		let dw = fw * scale
-		let dh = fh * scale
-		var ndcScale = SIMD2<Float>(min(dw / tw, 1), min(dh / th, 1))
-		var uvSize = SIMD2<Float>(min(tw / dw, 1), min(th / dh, 1))
-		if mode == .fit { uvSize = .one } else { ndcScale = .one }
-		let uvOrigin = (SIMD2<Float>.one - uvSize) * 0.5
-		return (ndcScale, uvOrigin, uvSize, scale)
 	}
 
 	private func ycbcrPipeline(for format: MTLPixelFormat) -> MTLRenderPipelineState {

@@ -80,8 +80,30 @@ struct StreamSettingsForm: View {
 		}
 
 		Section {
-			Picker("Picture", selection: $settings.displayMode) {
-				ForEach(DisplayMode.allCases) { Text($0.label).tag($0) }
+			VStack(alignment: .leading, spacing: 6) {
+				HStack {
+					Text("Zoom")
+					Spacer()
+					let pct = Int((settings.zoomLevel * 100).rounded())
+					Text(pct == 0 ? "Fit" : (pct == 100 ? "Fill" : "\(pct)%"))
+						.foregroundStyle(.secondary)
+						.monospacedDigit()
+				}
+				Slider(value: $settings.zoomLevel, in: 0.0...1.0, step: 0.05)
+					.onChange(of: settings.zoomLevel) { _, new in
+						settings.displayMode = new >= 0.5 ? .zoom : .fit
+					}
+				HStack(spacing: 8) {
+					Button("Fit") { settings.zoomLevel = 0.0 }
+						.buttonStyle(.bordered)
+						.controlSize(.small)
+					Button("50%") { settings.zoomLevel = 0.5 }
+						.buttonStyle(.bordered)
+						.controlSize(.small)
+					Button("Fill") { settings.zoomLevel = 1.0 }
+						.buttonStyle(.bordered)
+						.controlSize(.small)
+				}
 			}
 			if UIScreen.main.maximumFramesPerSecond > 60 {
 				Toggle("120 Hz screen", isOn: $settings.highRefreshDisplay)
@@ -90,7 +112,7 @@ struct StreamSettingsForm: View {
 		} header: {
 			Text("Display")
 		} footer: {
-			Text("Fit shows the whole picture, with black bars where the screen is a different shape to 16:9. Zoom fills the screen and crops the overflow. 120 Hz screen gets each frame on screen sooner, for a little more battery.")
+			Text("Fit shows the whole picture without cropping; Fill stretches to the full screen. Intermediate zoom lets you trim black bars without losing HUD edges. 120 Hz screen gets each frame on screen sooner, for a little more battery.")
 		}
 
 		Section {
@@ -127,19 +149,27 @@ struct StreamSettingsForm: View {
 				}
 				Slider(value: $settings.colorAdjustments.gamma, in: 0.70...1.50, step: 0.05)
 			}
+			VStack(alignment: .leading) {
+				HStack {
+					Text("Sharpness (CAS)")
+					Spacer()
+					Text("\(Int((settings.colorAdjustments.sharpness * 100).rounded()))%").foregroundStyle(.secondary).monospacedDigit()
+				}
+				Slider(value: $settings.colorAdjustments.sharpness, in: 0.00...1.00, step: 0.05)
+			}
 			Button {
 				settings.colorAdjustments = .vividOLED
 			} label: {
-				Label("Vivid OLED (+10% contrast, +20% sat)", systemImage: "sun.max.fill")
+				Label("Vivid OLED (+contrast, +sat, +CAS)", systemImage: "sun.max.fill")
 			}
-			Button("Reset colors", role: .destructive) {
+			Button("Reset colors & sharpness", role: .destructive) {
 				settings.colorAdjustments = .neutral
 			}
 			.disabled(settings.colorAdjustments.isNeutral)
 		} header: {
-			Text("Color")
+			Text("Color & Sharpening")
 		} footer: {
-			Text("Adjusts picture colors live on the GPU without reconnecting. Gamma lifts shadows while keeping pure OLED blacks.")
+			Text("Adjusts picture colors and Contrast Adaptive Sharpening (CAS) live on the GPU without reconnecting. Gamma lifts shadows while keeping pure OLED blacks.")
 		}
 
 		Section {

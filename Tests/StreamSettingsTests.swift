@@ -83,29 +83,57 @@ final class StreamSettingsTests: XCTestCase {
 
 	func testColorAdjustmentsNeutralClampingAndCodable() throws {
 		XCTAssertTrue(ColorAdjustments.neutral.isNeutral)
+		XCTAssertFalse(ColorAdjustments.neutral.hasColorGrading)
+		XCTAssertFalse(ColorAdjustments.neutral.hasSharpness)
 		XCTAssertFalse(ColorAdjustments.vividOLED.isNeutral)
+		XCTAssertTrue(ColorAdjustments.vividOLED.hasColorGrading)
+		XCTAssertTrue(ColorAdjustments.vividOLED.hasSharpness)
 
-		let tooHigh = ColorAdjustments(brightness: 1.0, contrast: 3.0, saturation: 5.0, gamma: 3.0).clamped
+		let sharpOnly = ColorAdjustments(sharpness: 0.35)
+		XCTAssertFalse(sharpOnly.hasColorGrading)
+		XCTAssertTrue(sharpOnly.hasSharpness)
+		XCTAssertFalse(sharpOnly.isNeutral)
+
+		let tooHigh = ColorAdjustments(brightness: 1.0, contrast: 3.0, saturation: 5.0, gamma: 3.0, sharpness: 2.0).clamped
 		XCTAssertEqual(tooHigh.brightness, 0.30, accuracy: 0.0001)
 		XCTAssertEqual(tooHigh.contrast, 1.50, accuracy: 0.0001)
 		XCTAssertEqual(tooHigh.saturation, 2.00, accuracy: 0.0001)
 		XCTAssertEqual(tooHigh.gamma, 1.50, accuracy: 0.0001)
+		XCTAssertEqual(tooHigh.sharpness, 1.00, accuracy: 0.0001)
 
-		let tooLow = ColorAdjustments(brightness: -1.0, contrast: 0.1, saturation: -0.5, gamma: 0.2).clamped
+		let tooLow = ColorAdjustments(brightness: -1.0, contrast: 0.1, saturation: -0.5, gamma: 0.2, sharpness: -0.5).clamped
 		XCTAssertEqual(tooLow.brightness, -0.30, accuracy: 0.0001)
 		XCTAssertEqual(tooLow.contrast, 0.50, accuracy: 0.0001)
 		XCTAssertEqual(tooLow.saturation, 0.0, accuracy: 0.0001)
 		XCTAssertEqual(tooLow.gamma, 0.70, accuracy: 0.0001)
+		XCTAssertEqual(tooLow.sharpness, 0.0, accuracy: 0.0001)
 
 		var settings = StreamSettings()
-		settings.colorAdjustments = ColorAdjustments(brightness: 0.08, contrast: 1.15, saturation: 1.25, gamma: 1.05)
+		settings.colorAdjustments = ColorAdjustments(brightness: 0.08, contrast: 1.15, saturation: 1.25, gamma: 1.05, sharpness: 0.40)
+		settings.zoomLevel = 0.45
 		let data = try JSONEncoder().encode(settings)
 		let decoded = try JSONDecoder().decode(StreamSettings.self, from: data)
 		XCTAssertEqual(decoded.colorAdjustments, settings.colorAdjustments)
+		XCTAssertEqual(decoded.zoomLevel, 0.45, accuracy: 0.0001)
 
 		let legacyData = #"{"fps":60,"showStats":false}"#.data(using: .utf8)!
 		let legacyDecoded = try JSONDecoder().decode(StreamSettings.self, from: legacyData)
 		XCTAssertEqual(legacyDecoded.colorAdjustments, .neutral)
 		XCTAssertTrue(legacyDecoded.colorAdjustments.isNeutral)
+		XCTAssertEqual(legacyDecoded.zoomLevel, 0.0, accuracy: 0.0001)
+	}
+
+	func testLegacyZoomLevelMigration() throws {
+		let legacyZoom = #"{"displayMode":"zoom"}"#.data(using: .utf8)!
+		let decodedZoom = try JSONDecoder().decode(StreamSettings.self, from: legacyZoom)
+		XCTAssertEqual(decodedZoom.zoomLevel, 1.0, accuracy: 0.0001)
+
+		let legacyFit = #"{"displayMode":"fit"}"#.data(using: .utf8)!
+		let decodedFit = try JSONDecoder().decode(StreamSettings.self, from: legacyFit)
+		XCTAssertEqual(decodedFit.zoomLevel, 0.0, accuracy: 0.0001)
+
+		let explicitZoom = #"{"displayMode":"fit","zoomLevel":0.45}"#.data(using: .utf8)!
+		let decodedExplicit = try JSONDecoder().decode(StreamSettings.self, from: explicitZoom)
+		XCTAssertEqual(decodedExplicit.zoomLevel, 0.45, accuracy: 0.0001)
 	}
 }

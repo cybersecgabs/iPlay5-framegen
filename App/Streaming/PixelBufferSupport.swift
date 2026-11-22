@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreVideo
 import Foundation
+import simd
 
 /// Pure CoreVideo / scaling geometry helpers shared by VideoEnhancer, MetalRenderer, and unit tests.
 enum PixelBufferSupport {
@@ -117,11 +118,57 @@ enum PixelBufferSupport {
 		}
 	}
 
+	struct ViewportGeometry: Equatable {
+		let ndcScale: SIMD2<Float>
+		let uvOrigin: SIMD2<Float>
+		let uvSize: SIMD2<Float>
+		let scale: Float
+	}
+
+	static func computeViewportGeometry(
+		videoWidth: Int,
+		videoHeight: Int,
+		drawableSize: CGSize,
+		zoomLevel: Double
+	) -> ViewportGeometry {
+		let fw = Float(videoWidth)
+		let fh = Float(videoHeight)
+		let tw = Float(drawableSize.width)
+		let th = Float(drawableSize.height)
+		let fitScale = min(tw / fw, th / fh)
+		let fillScale = max(tw / fw, th / fh)
+		let z = Float(min(max(zoomLevel, 0.0), 1.0))
+		let scale: Float =
+			if z <= 0 { fitScale }
+			else if z >= 1 { fillScale }
+			else { fitScale + (fillScale - fitScale) * z }
+		let dw = fw * scale
+		let dh = fh * scale
+		let ndcScale = SIMD2<Float>(min(dw / tw, 1), min(dh / th, 1))
+		let uvSize = SIMD2<Float>(min(tw / dw, 1), min(th / dh, 1))
+		let uvOrigin = (SIMD2<Float>.one - uvSize) * 0.5
+		return ViewportGeometry(ndcScale: ndcScale, uvOrigin: uvOrigin, uvSize: uvSize, scale: scale)
+	}
+
 	static func computeUpscaleTargetSize(
 		inputWidth: Int,
 		inputHeight: Int,
 		drawableSize: CGSize,
 		displayMode: DisplayMode
+	) -> (width: Int, height: Int)? {
+		computeUpscaleTargetSize(
+			inputWidth: inputWidth,
+			inputHeight: inputHeight,
+			drawableSize: drawableSize,
+			zoomLevel: displayMode == .fit ? 0.0 : 1.0
+		)
+	}
+
+	static func computeUpscaleTargetSize(
+		inputWidth: Int,
+		inputHeight: Int,
+		drawableSize: CGSize,
+		zoomLevel: Double
 	) -> (width: Int, height: Int)? {
 		guard inputWidth > 0, inputHeight > 0,
 			drawableSize.width > 0, drawableSize.height > 0,
@@ -133,7 +180,13 @@ enum PixelBufferSupport {
 		let tw = Double(drawableSize.width)
 		let th = Double(drawableSize.height)
 
-		let rawScale = displayMode == .fit ? min(tw / iw, th / ih) : max(tw / iw, th / ih)
+		let fitScale = min(tw / iw, th / ih)
+		let fillScale = max(tw / iw, th / ih)
+		let z = min(max(zoomLevel, 0.0), 1.0)
+		let rawScale: Double =
+			if z <= 0 { fitScale }
+			else if z >= 1 { fillScale }
+			else { fitScale + (fillScale - fitScale) * z }
 		guard rawScale > 1.01 else { return nil }
 
 		let scale = min(rawScale, 4.0)

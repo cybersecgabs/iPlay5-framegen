@@ -133,15 +133,18 @@ struct ColorAdjustments: Codable, Equatable {
 	var saturation: Double = 1.0
 	/// Midtone gamma multiplier (0.70 ... 1.50), 1.0 = neutral (preserves pure OLED blacks)
 	var gamma: Double = 1.0
+	/// Contrast Adaptive Sharpening intensity (0.00 ... 1.00), 0.0 = off
+	var sharpness: Double = 0.0
 
 	static let neutral = ColorAdjustments()
-	static let vividOLED = ColorAdjustments(brightness: 0.0, contrast: 1.10, saturation: 1.20, gamma: 1.0)
+	static let vividOLED = ColorAdjustments(brightness: 0.0, contrast: 1.10, saturation: 1.20, gamma: 1.0, sharpness: 0.25)
 
-	init(brightness: Double = 0.0, contrast: Double = 1.0, saturation: Double = 1.0, gamma: Double = 1.0) {
+	init(brightness: Double = 0.0, contrast: Double = 1.0, saturation: Double = 1.0, gamma: Double = 1.0, sharpness: Double = 0.0) {
 		self.brightness = brightness
 		self.contrast = contrast
 		self.saturation = saturation
 		self.gamma = gamma
+		self.sharpness = sharpness
 	}
 
 	init(from decoder: Decoder) throws {
@@ -151,13 +154,22 @@ struct ColorAdjustments: Codable, Equatable {
 		contrast = try c.decodeIfPresent(Double.self, forKey: .contrast) ?? d.contrast
 		saturation = try c.decodeIfPresent(Double.self, forKey: .saturation) ?? d.saturation
 		gamma = try c.decodeIfPresent(Double.self, forKey: .gamma) ?? d.gamma
+		sharpness = try c.decodeIfPresent(Double.self, forKey: .sharpness) ?? d.sharpness
+	}
+
+	var hasColorGrading: Bool {
+		abs(brightness) >= 0.001
+			|| abs(contrast - 1.0) >= 0.001
+			|| abs(saturation - 1.0) >= 0.001
+			|| abs(gamma - 1.0) >= 0.001
+	}
+
+	var hasSharpness: Bool {
+		sharpness >= 0.001
 	}
 
 	var isNeutral: Bool {
-		abs(brightness) < 0.001
-			&& abs(contrast - 1.0) < 0.001
-			&& abs(saturation - 1.0) < 0.001
-			&& abs(gamma - 1.0) < 0.001
+		!hasColorGrading && !hasSharpness
 	}
 
 	var clamped: ColorAdjustments {
@@ -165,7 +177,8 @@ struct ColorAdjustments: Codable, Equatable {
 			brightness: min(max(brightness, -0.30), 0.30),
 			contrast: min(max(contrast, 0.50), 1.50),
 			saturation: min(max(saturation, 0.0), 2.00),
-			gamma: min(max(gamma, 0.70), 1.50)
+			gamma: min(max(gamma, 0.70), 1.50),
+			sharpness: min(max(sharpness, 0.0), 1.00)
 		)
 	}
 }
@@ -177,6 +190,8 @@ struct StreamSettings: Codable, Equatable {
 	var codec: VideoCodecChoice = .h265
 	var hdr: Bool = false
 	var displayMode: DisplayMode = .fit
+	/// Continuous zoom between Fit (0.0) and Zoom to fill (1.0)
+	var zoomLevel: Double = 0.0
 	var sharpUpscaling: Bool = true
 	var upscalingMode: UpscalingMode = .metalFX
 	var frameGenMode: FrameGenMode = .off
@@ -210,6 +225,11 @@ struct StreamSettings: Codable, Equatable {
 		codec = try c.decodeIfPresent(VideoCodecChoice.self, forKey: .codec) ?? d.codec
 		hdr = try c.decodeIfPresent(Bool.self, forKey: .hdr) ?? d.hdr
 		displayMode = try c.decodeIfPresent(DisplayMode.self, forKey: .displayMode) ?? d.displayMode
+		if let decodedZoom = try c.decodeIfPresent(Double.self, forKey: .zoomLevel) {
+			zoomLevel = min(max(decodedZoom, 0.0), 1.0)
+		} else {
+			zoomLevel = displayMode == .zoom ? 1.0 : 0.0
+		}
 		sharpUpscaling = try c.decodeIfPresent(Bool.self, forKey: .sharpUpscaling) ?? d.sharpUpscaling
 		if let decodedUpscaling = try c.decodeIfPresent(UpscalingMode.self, forKey: .upscalingMode) {
 			upscalingMode = decodedUpscaling

@@ -16,7 +16,7 @@ struct RenderUniforms {
 	float saturation;
 	float gamma;
 	int colorAdjust;   // 0 = bypass, 1 = apply color adjustments
-	int _pad;
+	float sharpness;   // 0.0 ... 1.0 CAS sharpening
 };
 
 struct VertexOut {
@@ -99,6 +99,38 @@ static float3 apply_color_adjustments(float3 rgb,
 	return rgb;
 }
 
+static float apply_cas_luma(texture2d<float> lumaTex, sampler s, float2 uv, float2 texSize, float centerY, float sharpness) {
+	float2 texelStep = 1.0 / max(texSize, float2(1.0));
+	float b = lumaTex.sample(s, uv + float2(0.0, -texelStep.y)).r;
+	float d = lumaTex.sample(s, uv + float2(-texelStep.x, 0.0)).r;
+	float f = lumaTex.sample(s, uv + float2(texelStep.x, 0.0)).r;
+	float h = lumaTex.sample(s, uv + float2(0.0, texelStep.y)).r;
+
+	float mn = min(min(min(b, d), min(f, h)), centerY);
+	float mx = max(max(max(b, d), max(f, h)), centerY);
+
+	float amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
+	float peak = -1.0 / mix(8.0, 5.0, sharpness);
+	float w = amp * peak * sharpness;
+	return saturate((centerY + (b + d + f + h) * w) / (1.0 + 4.0 * w));
+}
+
+static float3 apply_cas_rgb(texture2d<float> tex, sampler s, float2 uv, float2 texSize, float3 center, float sharpness) {
+	float2 texelStep = 1.0 / max(texSize, float2(1.0));
+	float3 b = saturate(tex.sample(s, uv + float2(0.0, -texelStep.y)).rgb);
+	float3 d = saturate(tex.sample(s, uv + float2(-texelStep.x, 0.0)).rgb);
+	float3 f = saturate(tex.sample(s, uv + float2(texelStep.x, 0.0)).rgb);
+	float3 h = saturate(tex.sample(s, uv + float2(0.0, texelStep.y)).rgb);
+
+	float3 mn = min(min(min(b, d), min(f, h)), center);
+	float3 mx = max(max(max(b, d), max(f, h)), center);
+
+	float3 amp = sqrt(saturate(min(mn, float3(1.0) - mx) / max(mx, float3(1e-4))));
+	float peak = -1.0 / mix(8.0, 5.0, sharpness);
+	float3 w = amp * peak * sharpness;
+	return saturate((center + (b + d + f + h) * w) / (1.0 + 4.0 * w));
+}
+
 fragment float4 stream_fragment(VertexOut in [[stage_in]],
                                 texture2d<float> lumaTex [[texture(0)]],
                                 texture2d<float> chromaTex [[texture(1)]],
@@ -106,6 +138,9 @@ fragment float4 stream_fragment(VertexOut in [[stage_in]],
 	constexpr sampler s(filter::linear, address::clamp_to_edge);
 
 	float y = u.bicubic ? sample_catmull_rom(lumaTex, s, in.uv, u.lumaSize) : lumaTex.sample(s, in.uv).r;
+	if (u.sharpness > 0.001) {
+		y = apply_cas_luma(lumaTex, s, in.uv, u.lumaSize, y, u.sharpness);
+	}
 	float2 c = chromaTex.sample(s, in.uv).rg;
 
 	if (!u.fullRange) {
@@ -159,6 +194,7 @@ struct BlitUniforms {
 	float2 ndcScale;
 	float2 uvOrigin;
 	float2 uvSize;
+	float2 texSize;
 	int transferMode; // 0 = passthrough, 1 = SDR sRGB/BT.709 -> BT.2020 PQ
 	int colorAdjust;  // 0 = bypass, 1 = apply color adjustments
 	float brightness;
@@ -166,7 +202,7 @@ struct BlitUniforms {
 	float saturation;
 	float gamma;
 	int bt2020;       // 0 = BT.709, 1 = BT.2020
-	int _pad;
+	float sharpness;  // 0.0 ... 1.0 CAS sharpening
 };
 
 vertex VertexOut blit_vertex(uint vid [[vertex_id]], constant BlitUniforms &u [[buffer(0)]]) {
@@ -183,6 +219,9 @@ fragment float4 blit_fragment(VertexOut in [[stage_in]],
                               constant BlitUniforms &u [[buffer(0)]]) {
 	constexpr sampler s(filter::linear, address::clamp_to_edge);
 	float3 rgb = saturate(srcTex.sample(s, in.uv).rgb);
+	if (u.sharpness > 0.001) {
+		rgb = apply_cas_rgb(srcTex, s, in.uv, u.texSize, rgb, u.sharpness);
+	}
 	if (u.colorAdjust != 0) {
 		rgb = apply_color_adjustments(rgb, u.brightness, u.contrast, u.saturation, u.gamma, u.transferMode == 1 ? 0 : u.bt2020);
 	}
