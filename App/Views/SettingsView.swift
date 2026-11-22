@@ -174,12 +174,27 @@ struct StreamSettingsForm: View {
 
 		Section {
 			Toggle("Rumble", isOn: $settings.rumble)
+			if settings.rumble {
+				Picker("Rumble output", selection: $settings.rumbleTarget) {
+					ForEach(RumbleTarget.allCases) { Text($0.label).tag($0) }
+				}
+				VStack(alignment: .leading) {
+					HStack {
+						Text("Rumble intensity")
+						Spacer()
+						Text("\(Int((settings.rumbleIntensity * 100).rounded()))%")
+							.foregroundStyle(.secondary)
+							.monospacedDigit()
+					}
+					Slider(value: $settings.rumbleIntensity, in: 0.0...1.0, step: 0.05)
+				}
+			}
 			Toggle("Phone gyro for motion controls", isOn: $settings.phoneMotion)
 			Toggle("Select button is touchpad click", isOn: $settings.selectIsTouchpad)
 		} header: {
 			Text("Controller")
 		} footer: {
-			Text("Phone gyro is used when the controller has no motion sensors, like a GameSir G8+. Hold Select + Start for a second during a stream to open the menu.")
+			Text("Auto uses controller motors if present or the iPhone Taptic Engine otherwise (e.g. GameSir G8). Phone gyro is used when the controller has no motion sensors. Hold Select + Start for a second during a stream to open the menu.")
 		}
 	}
 }

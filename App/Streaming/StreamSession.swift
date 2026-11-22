@@ -209,7 +209,8 @@ final class StreamSession {
 
 		input.selectIsTouchpad = settings.selectIsTouchpad
 		input.phoneMotionEnabled = settings.phoneMotion
-		input.rumble.enabled = settings.rumble
+		input.rumble.configure(enabled: settings.rumble, intensity: Float(settings.rumbleIntensity), target: settings.rumbleTarget)
+		input.rumble.setPaused(paused)
 		input.onPad = { [weak self] pad in
 			self?.lastPad = pad
 			self?.sendPad()
@@ -270,7 +271,7 @@ final class StreamSession {
 			|| new.effectiveCodec != settings.effectiveCodec || new.hdr != settings.hdr
 		settings = new
 		input.selectIsTouchpad = new.selectIsTouchpad
-		input.rumble.enabled = new.rumble
+		input.rumble.configure(enabled: new.rumble, intensity: Float(new.rumbleIntensity), target: new.rumbleTarget)
 		renderer?.setDisplayMode(new.displayMode)
 		renderer?.setZoomLevel(new.zoomLevel)
 		renderer?.setColorAdjustments(new.colorAdjustments)
@@ -301,6 +302,7 @@ final class StreamSession {
 		enhancer?.setPaused(paused)
 		renderer?.setPaused(paused)
 		audio.muted = paused
+		input.rumble.setPaused(paused)
 		if !paused, let handle {
 			// We dropped frames while paused, so get a clean keyframe
 			ck_session_request_idr(handle)

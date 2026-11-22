@@ -79,4 +79,69 @@ final class ControllerInputTests: XCTestCase {
 		XCTAssertTrue(res.shareButtonPressed)
 		XCTAssertTrue(res.needsVirtualCenterTouch)
 	}
+
+	func testRumbleTargetSelectionLogic() {
+		// Controller with motors
+		XCTAssertTrue(RumbleOutput.shouldUseControllerEngine(controllerHasHaptics: true, target: .auto))
+		XCTAssertFalse(RumbleOutput.shouldUsePhoneEngine(controllerHasHaptics: true, target: .auto, deviceSupportsHaptics: true))
+
+		XCTAssertTrue(RumbleOutput.shouldUseControllerEngine(controllerHasHaptics: true, target: .controllerOnly))
+		XCTAssertFalse(RumbleOutput.shouldUsePhoneEngine(controllerHasHaptics: true, target: .controllerOnly, deviceSupportsHaptics: true))
+
+		XCTAssertFalse(RumbleOutput.shouldUseControllerEngine(controllerHasHaptics: true, target: .phoneOnly))
+		XCTAssertTrue(RumbleOutput.shouldUsePhoneEngine(controllerHasHaptics: true, target: .phoneOnly, deviceSupportsHaptics: true))
+
+		// Controller without motors (e.g. GameSir G8 USB-C)
+		XCTAssertFalse(RumbleOutput.shouldUseControllerEngine(controllerHasHaptics: false, target: .auto))
+		XCTAssertTrue(RumbleOutput.shouldUsePhoneEngine(controllerHasHaptics: false, target: .auto, deviceSupportsHaptics: true))
+		XCTAssertFalse(RumbleOutput.shouldUsePhoneEngine(controllerHasHaptics: false, target: .controllerOnly, deviceSupportsHaptics: true))
+		XCTAssertFalse(RumbleOutput.shouldUsePhoneEngine(controllerHasHaptics: false, target: .auto, deviceSupportsHaptics: false))
+	}
+
+	func testRumbleComputeMotorLevelsScalingAndClamping() {
+		let dual = RumbleOutput.computeMotorLevels(left: 255, right: 128, motorCount: 2, intensity: 0.5, enabled: true)
+		XCTAssertEqual(dual.count, 2)
+		XCTAssertEqual(dual[0], 0.5, accuracy: 0.001)
+		XCTAssertEqual(dual[1], (128.0 / 255.0) * 0.5, accuracy: 0.001)
+
+		let single = RumbleOutput.computeMotorLevels(left: 64, right: 204, motorCount: 1, intensity: 0.5, enabled: true)
+		XCTAssertEqual(single.count, 1)
+		XCTAssertEqual(single[0], (204.0 / 255.0) * 0.5, accuracy: 0.001)
+
+		let clamped = RumbleOutput.computeMotorLevels(left: 255, right: 255, motorCount: 2, intensity: 2.0, enabled: true)
+		XCTAssertEqual(clamped[0], 1.0, accuracy: 0.0001)
+		XCTAssertEqual(clamped[1], 1.0, accuracy: 0.0001)
+
+		let disabled = RumbleOutput.computeMotorLevels(left: 255, right: 255, motorCount: 2, intensity: 1.0, enabled: false)
+		XCTAssertEqual(disabled, [0.0, 0.0])
+
+		XCTAssertTrue(RumbleOutput.computeMotorLevels(left: 255, right: 255, motorCount: 0, intensity: 1.0, enabled: true).isEmpty)
+	}
+
+	func testPhoneHapticParametersSharpnessAndNoiseFloor() {
+		// Heavy (left) motor only -> low sharpness (0.20)
+		let heavy = RumbleOutput.computePhoneHapticParameters(left: 255, right: 0, intensity: 0.8, enabled: true)
+		XCTAssertEqual(heavy.intensity, 0.8, accuracy: 0.001)
+		XCTAssertEqual(heavy.sharpness, 0.20, accuracy: 0.001)
+
+		// Light (right) motor only -> high sharpness (0.85)
+		let light = RumbleOutput.computePhoneHapticParameters(left: 0, right: 255, intensity: 0.6, enabled: true)
+		XCTAssertEqual(light.intensity, 0.6, accuracy: 0.001)
+		XCTAssertEqual(light.sharpness, 0.85, accuracy: 0.001)
+
+		// Balanced -> midpoint sharpness (0.525)
+		let balanced = RumbleOutput.computePhoneHapticParameters(left: 200, right: 200, intensity: 1.0, enabled: true)
+		XCTAssertEqual(balanced.intensity, 200.0 / 255.0, accuracy: 0.001)
+		XCTAssertEqual(balanced.sharpness, 0.525, accuracy: 0.001)
+
+		// Noise floor zeros very quiet values
+		let quiet = RumbleOutput.computePhoneHapticParameters(left: 2, right: 1, intensity: 1.0, enabled: true)
+		XCTAssertEqual(quiet.intensity, 0.0, accuracy: 0.0001)
+		XCTAssertEqual(quiet.sharpness, RumbleOutput.phoneBaseSharpness, accuracy: 0.0001)
+
+		// Disabled -> zero
+		let off = RumbleOutput.computePhoneHapticParameters(left: 255, right: 255, intensity: 1.0, enabled: false)
+		XCTAssertEqual(off.intensity, 0.0, accuracy: 0.0001)
+		XCTAssertEqual(off.sharpness, RumbleOutput.phoneBaseSharpness, accuracy: 0.0001)
+	}
 }

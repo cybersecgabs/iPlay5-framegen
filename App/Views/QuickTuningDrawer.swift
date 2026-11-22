@@ -22,6 +22,7 @@ struct QuickTuningDrawer: View {
 						enhancerCard
 						displayCard
 						colorCard
+						hapticsCard
 						footerCard
 					}
 					.padding(14)
@@ -205,6 +206,31 @@ struct QuickTuningDrawer: View {
 					.buttonStyle(.bordered)
 					.controlSize(.small)
 					.disabled(settings.colorAdjustments.isNeutral)
+				}
+			}
+		}
+	}
+
+	private var hapticsCard: some View {
+		drawerCard("Rumble & Haptics") {
+			VStack(alignment: .leading, spacing: 10) {
+				Toggle("Rumble", isOn: $settings.rumble)
+					.font(.subheadline)
+				if settings.rumble {
+					Picker("Output", selection: $settings.rumbleTarget) {
+						ForEach(RumbleTarget.allCases) { mode in
+							Text(mode.shortLabel).tag(mode)
+						}
+					}
+					.pickerStyle(.segmented)
+
+					sliderRow(
+						title: "Intensity",
+						valueText: "\(Int((settings.rumbleIntensity * 100).rounded()))%",
+						value: $settings.rumbleIntensity,
+						range: 0.0...1.0,
+						step: 0.05
+					)
 				}
 			}
 		}

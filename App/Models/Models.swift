@@ -124,6 +124,31 @@ enum FrameGenMode: String, Codable, CaseIterable, Identifiable {
 	}
 }
 
+enum RumbleTarget: String, Codable, CaseIterable, Identifiable {
+	/// Use controller motors if available; otherwise fall back to the iPhone Taptic Engine.
+	case auto
+	/// Only use the controller's built-in rumble motors.
+	case controllerOnly
+	/// Always route rumble to the iPhone Taptic Engine.
+	case phoneOnly
+
+	var id: String { rawValue }
+	var label: String {
+		switch self {
+		case .auto: "Auto (Controller / iPhone)"
+		case .controllerOnly: "Controller only"
+		case .phoneOnly: "iPhone Taptic Engine"
+		}
+	}
+	var shortLabel: String {
+		switch self {
+		case .auto: "Auto"
+		case .controllerOnly: "Controller"
+		case .phoneOnly: "iPhone"
+		}
+	}
+}
+
 struct ColorAdjustments: Codable, Equatable {
 	/// Additive brightness offset (-0.30 ... +0.30), 0.0 = neutral
 	var brightness: Double = 0.0
@@ -205,6 +230,10 @@ struct StreamSettings: Codable, Equatable {
 	/// Phone gyro for controllers without motion sensors (e.g. GameSir G8+)
 	var phoneMotion: Bool = true
 	var rumble: Bool = true
+	/// Where rumble is sent (Auto falls back to iPhone Taptic Engine when controller has no motors)
+	var rumbleTarget: RumbleTarget = .auto
+	/// Rumble strength multiplier (0.0 ... 1.0)
+	var rumbleIntensity: Double = 1.0
 	/// Use the controller's Select/View button as the DualSense touchpad click
 	var selectIsTouchpad: Bool = false
 	/// Keep a ProMotion screen at 120 Hz while streaming, so frames wait less for the next refresh
@@ -243,6 +272,12 @@ struct StreamSettings: Codable, Equatable {
 		colorAdjustments = (try c.decodeIfPresent(ColorAdjustments.self, forKey: .colorAdjustments))?.clamped ?? d.colorAdjustments
 		phoneMotion = try c.decodeIfPresent(Bool.self, forKey: .phoneMotion) ?? d.phoneMotion
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
+		rumbleTarget = try c.decodeIfPresent(RumbleTarget.self, forKey: .rumbleTarget) ?? d.rumbleTarget
+		if let decodedIntensity = try c.decodeIfPresent(Double.self, forKey: .rumbleIntensity) {
+			rumbleIntensity = min(max(decodedIntensity, 0.0), 1.0)
+		} else {
+			rumbleIntensity = d.rumbleIntensity
+		}
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
 		highRefreshDisplay = try c.decodeIfPresent(Bool.self, forKey: .highRefreshDisplay) ?? d.highRefreshDisplay
 	}

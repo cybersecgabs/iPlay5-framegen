@@ -136,4 +136,28 @@ final class StreamSettingsTests: XCTestCase {
 		let decodedExplicit = try JSONDecoder().decode(StreamSettings.self, from: explicitZoom)
 		XCTAssertEqual(decodedExplicit.zoomLevel, 0.45, accuracy: 0.0001)
 	}
+
+	func testRumbleSettingsCodableAndClamping() throws {
+		var settings = StreamSettings()
+		XCTAssertEqual(settings.rumbleTarget, .auto)
+		XCTAssertEqual(settings.rumbleIntensity, 1.0, accuracy: 0.0001)
+
+		settings.rumbleTarget = .phoneOnly
+		settings.rumbleIntensity = 0.65
+		let encoded = try JSONEncoder().encode(settings)
+		let decoded = try JSONDecoder().decode(StreamSettings.self, from: encoded)
+		XCTAssertEqual(decoded.rumbleTarget, .phoneOnly)
+		XCTAssertEqual(decoded.rumbleIntensity, 0.65, accuracy: 0.0001)
+
+		let tooHigh = try JSONDecoder().decode(StreamSettings.self, from: #"{"rumbleIntensity":2.5}"#.data(using: .utf8)!)
+		XCTAssertEqual(tooHigh.rumbleIntensity, 1.0, accuracy: 0.0001)
+
+		let tooLow = try JSONDecoder().decode(StreamSettings.self, from: #"{"rumbleIntensity":-0.5}"#.data(using: .utf8)!)
+		XCTAssertEqual(tooLow.rumbleIntensity, 0.0, accuracy: 0.0001)
+
+		let legacy = try JSONDecoder().decode(StreamSettings.self, from: #"{"rumble":false}"#.data(using: .utf8)!)
+		XCTAssertFalse(legacy.rumble)
+		XCTAssertEqual(legacy.rumbleTarget, .auto)
+		XCTAssertEqual(legacy.rumbleIntensity, 1.0, accuracy: 0.0001)
+	}
 }

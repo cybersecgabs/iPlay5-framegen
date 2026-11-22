@@ -86,7 +86,7 @@ final class ControllerInput {
 		observers.append(NotificationCenter.default.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { [weak self] _ in
 			self?.pickController()
 		})
-		pickController()
+		pickController(force: true)
 	}
 
 	func stop() {
@@ -108,10 +108,10 @@ final class ControllerInput {
 
 	// MARK: - Controller selection
 
-	private func pickController() {
+	private func pickController(force: Bool = false) {
 		let candidates = GCController.controllers().filter { $0.extendedGamepad != nil }
 		let next = GCController.current.flatMap { candidates.contains($0) ? $0 : nil } ?? candidates.first
-		guard next !== controller else { return }
+		guard force || next !== controller else { return }
 
 		releaseAllTouches()
 		if let controller {
@@ -401,59 +401,470 @@ final class ControllerInput {
 	}
 }
 
-/// Rumble through the controller's haptic motors (if it has any).
+/// Rumble through the controller's haptic motors, or fall back to the iPhone Taptic Engine.
 ///
-/// Uses one continuous haptic player per side and changes its intensity as
-/// PS5 rumble values arrive, which is cheaper than scheduling new patterns.
+/// Uses continuous CoreHaptics pattern players and updates dynamic intensity/sharpness
+/// as PS5 rumble or DualSense haptic values arrive, which is cheaper than scheduling new patterns.
 final class RumbleOutput {
+	struct PhoneHapticParameters: Equatable {
+		let intensity: Float
+		let sharpness: Float
+	}
+
+	static let phoneBaseSharpness: Float = 0.5
+	static let phoneNoiseFloor: Float = 0.02
+
+	static func shouldUseControllerEngine(controllerHasHaptics: Bool, target: RumbleTarget) -> Bool {
+		guard controllerHasHaptics else { return false }
+		switch target {
+		case .auto, .controllerOnly: return true
+		case .phoneOnly: return false
+		}
+	}
+
+	static func shouldUsePhoneEngine(controllerHasHaptics: Bool, target: RumbleTarget, deviceSupportsHaptics: Bool) -> Bool {
+		guard deviceSupportsHaptics else { return false }
+		switch target {
+		case .auto: return !controllerHasHaptics
+		case .controllerOnly: return false
+		case .phoneOnly: return true
+		}
+	}
+
+	static func computeMotorLevels(left: UInt8, right: UInt8, motorCount: Int, intensity: Float, enabled: Bool) -> [Float] {
+		guard motorCount > 0 else { return [] }
+		let scale = enabled ? min(max(intensity, 0), 1) : 0
+		let l = min(max((Float(left) / 255) * scale, 0), 1)
+		let r = min(max((Float(right) / 255) * scale, 0), 1)
+		return motorCount >= 2 ? [l, r] : [max(l, r)]
+	}
+
+	static func computePhoneHapticParameters(left: UInt8, right: UInt8, intensity: Float, enabled: Bool) -> PhoneHapticParameters {
+		let scale = enabled ? min(max(intensity, 0), 1) : 0
+		guard scale > 0 else { return PhoneHapticParameters(intensity: 0, sharpness: phoneBaseSharpness) }
+		let l = Float(left) / 255
+		let r = Float(right) / 255
+		let scaled = max(l, r) * scale
+		guard scaled >= phoneNoiseFloor else {
+			return PhoneHapticParameters(intensity: 0, sharpness: phoneBaseSharpness)
+		}
+		let total = l + r
+		let highRatio = total > 0 ? (r / total) : 0.5
+		let sharpness = 0.20 + highRatio * 0.65
+		return PhoneHapticParameters(
+			intensity: min(max(scaled, 0), 1),
+			sharpness: min(max(sharpness, 0), 1)
+		)
+	}
+
+	private let lock = NSLock()
 	private var engines: [CHHapticEngine] = []
 	private var players: [CHHapticAdvancedPatternPlayer] = []
-	var enabled = true
+	private var usingPhoneEngine = false
+	private var isAttached = false
+	private weak var attachedController: GCController?
+	private var _enabled = true
+	private var _intensity: Float = 1.0
+	private var _target: RumbleTarget = .auto
+	private var _paused = false
+	private var needsRestart = false
+	private var restartScheduled = false
+	private var lastSentValues: [Float] = []
+	private var lastSentSharpness: Float = -1
+
+	var enabled: Bool {
+		get {
+			lock.lock()
+			defer { lock.unlock() }
+			return _enabled
+		}
+		set {
+			let intensity: Float
+			let target: RumbleTarget
+			lock.lock()
+			intensity = _intensity
+			target = _target
+			lock.unlock()
+			configure(enabled: newValue, intensity: intensity, target: target)
+		}
+	}
+
+	deinit {
+		let oldPlayers: [CHHapticAdvancedPatternPlayer]
+		let oldEngines: [CHHapticEngine]
+		lock.lock()
+		oldPlayers = players
+		oldEngines = engines
+		players = []
+		engines = []
+		isAttached = false
+		attachedController = nil
+		lock.unlock()
+		Self.teardown(players: oldPlayers, engines: oldEngines)
+	}
+
+	func configure(enabled: Bool, intensity: Float, target: RumbleTarget) {
+		let clampedIntensity = min(max(intensity, 0), 1)
+		var playersToZero: [CHHapticAdvancedPatternPlayer] = []
+		var oldPlayers: [CHHapticAdvancedPatternPlayer] = []
+		var oldEngines: [CHHapticEngine] = []
+		var rebuildController: GCController?
+		var shouldRebuild = false
+
+		lock.lock()
+		let targetChanged = _target != target
+		let enabledChanged = _enabled != enabled
+		_enabled = enabled
+		_intensity = clampedIntensity
+		_target = target
+
+		if !enabled {
+			oldPlayers = players
+			oldEngines = engines
+			players = []
+			engines = []
+			usingPhoneEngine = false
+			needsRestart = false
+			restartScheduled = false
+			lastSentValues = []
+			lastSentSharpness = -1
+		} else if clampedIntensity <= 0.001 {
+			if !players.isEmpty {
+				playersToZero = players
+				lastSentValues = Array(repeating: 0, count: players.count)
+				lastSentSharpness = Self.phoneBaseSharpness
+			}
+		} else if isAttached && (targetChanged || enabledChanged || engines.isEmpty) {
+			oldPlayers = players
+			oldEngines = engines
+			players = []
+			engines = []
+			usingPhoneEngine = false
+			needsRestart = false
+			restartScheduled = false
+			lastSentValues = []
+			lastSentSharpness = -1
+			rebuildController = attachedController
+			shouldRebuild = !_paused
+		}
+		lock.unlock()
+
+		Self.teardown(players: oldPlayers, engines: oldEngines)
+		Self.zero(players: playersToZero)
+		if shouldRebuild {
+			rebuildEngines(for: rebuildController)
+		}
+	}
+
+	func setPaused(_ paused: Bool) {
+		var playersToZero: [CHHapticAdvancedPatternPlayer] = []
+		var rebuildController: GCController?
+		var shouldRebuild = false
+
+		lock.lock()
+		guard _paused != paused else {
+			lock.unlock()
+			return
+		}
+		_paused = paused
+		if paused {
+			if !players.isEmpty {
+				playersToZero = players
+				lastSentValues = Array(repeating: 0, count: players.count)
+				lastSentSharpness = Self.phoneBaseSharpness
+			}
+		} else if isAttached && _enabled && _intensity > 0.001 && (needsRestart || engines.isEmpty) {
+			needsRestart = false
+			rebuildController = attachedController
+			shouldRebuild = true
+		}
+		lock.unlock()
+
+		Self.zero(players: playersToZero)
+		if shouldRebuild {
+			rebuildEngines(for: rebuildController)
+		}
+	}
 
 	func attach(_ controller: GCController?) {
-		detach()
-		guard let haptics = controller?.haptics else { return }
-		let localities: [GCHapticsLocality] =
-			haptics.supportedLocalities.contains(.leftHandle) && haptics.supportedLocalities.contains(.rightHandle)
-			? [.leftHandle, .rightHandle] : [.default]
-		for locality in localities {
-			guard let engine = haptics.createEngine(withLocality: locality) else { continue }
-			do {
-				try engine.start()
-				let event = CHHapticEvent(
-					eventType: .hapticContinuous,
-					parameters: [
-						CHHapticEventParameter(parameterID: .hapticIntensity, value: 1),
-						CHHapticEventParameter(parameterID: .hapticSharpness, value: locality == .rightHandle ? 0.8 : 0.3),
-					], relativeTime: 0, duration: 30)
-				let pattern = try CHHapticPattern(events: [event], parameters: [])
-				let player = try engine.makeAdvancedPlayer(with: pattern)
-				player.loopEnabled = true
-				try player.sendParameters([CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: 0, relativeTime: 0)], atTime: CHHapticTimeImmediate)
-				try player.start(atTime: CHHapticTimeImmediate)
-				engines.append(engine)
-				players.append(player)
-			} catch {
-				log.error("Haptics: \(error.localizedDescription, privacy: .public)")
-			}
+		var oldPlayers: [CHHapticAdvancedPatternPlayer] = []
+		var oldEngines: [CHHapticEngine] = []
+		var shouldBuild = false
+
+		lock.lock()
+		oldPlayers = players
+		oldEngines = engines
+		players = []
+		engines = []
+		usingPhoneEngine = false
+		isAttached = true
+		attachedController = controller
+		needsRestart = false
+		restartScheduled = false
+		lastSentValues = []
+		lastSentSharpness = -1
+		shouldBuild = _enabled && !_paused && _intensity > 0.001
+		lock.unlock()
+
+		Self.teardown(players: oldPlayers, engines: oldEngines)
+		if shouldBuild {
+			rebuildEngines(for: controller)
 		}
 	}
 
 	func detach() {
-		players.forEach { try? $0.stop(atTime: CHHapticTimeImmediate) }
-		engines.forEach { $0.stop() }
+		var oldPlayers: [CHHapticAdvancedPatternPlayer] = []
+		var oldEngines: [CHHapticEngine] = []
+
+		lock.lock()
+		isAttached = false
+		attachedController = nil
+		oldPlayers = players
+		oldEngines = engines
 		players = []
 		engines = []
+		usingPhoneEngine = false
+		needsRestart = false
+		restartScheduled = false
+		lastSentValues = []
+		lastSentSharpness = -1
+		lock.unlock()
+
+		Self.teardown(players: oldPlayers, engines: oldEngines)
 	}
 
 	/// left = low frequency (heavy) motor, right = high frequency (light) motor, 0...255.
 	func set(left: UInt8, right: UInt8) {
-		guard enabled, !players.isEmpty else { return }
-		let l = Float(left) / 255
-		let r = Float(right) / 255
-		let values = players.count == 2 ? [l, r] : [max(l, r)]
-		for (player, value) in zip(players, values) {
-			try? player.sendParameters([CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: value, relativeTime: 0)], atTime: CHHapticTimeImmediate)
+		var activePlayers: [CHHapticAdvancedPatternPlayer] = []
+		var phoneParams: PhoneHapticParameters?
+		var motorValues: [Float]?
+		var scheduleRestart = false
+
+		lock.lock()
+		guard _enabled, !_paused else {
+			lock.unlock()
+			return
+		}
+		if needsRestart {
+			if (left > 0 || right > 0) && !restartScheduled && isAttached {
+				restartScheduled = true
+				scheduleRestart = true
+			}
+			lock.unlock()
+			if scheduleRestart {
+				DispatchQueue.main.async { [weak self] in
+					self?.restartIfNeeded()
+				}
+			}
+			return
+		}
+		guard !players.isEmpty else {
+			lock.unlock()
+			return
+		}
+
+		if usingPhoneEngine {
+			let params = Self.computePhoneHapticParameters(left: left, right: right, intensity: _intensity, enabled: true)
+			let sameIntensity = lastSentValues.count == 1
+				&& ((params.intensity == 0 && lastSentValues[0] == 0)
+					|| (params.intensity > 0 && lastSentValues[0] > 0 && abs(lastSentValues[0] - params.intensity) < 0.005))
+			let sameSharpness = params.intensity == 0 || abs(lastSentSharpness - params.sharpness) < 0.02
+			if sameIntensity && sameSharpness {
+				lock.unlock()
+				return
+			}
+			lastSentValues = [params.intensity]
+			lastSentSharpness = params.sharpness
+			activePlayers = players
+			phoneParams = params
+		} else {
+			let values = Self.computeMotorLevels(left: left, right: right, motorCount: players.count, intensity: _intensity, enabled: true)
+			let unchanged = lastSentValues.count == values.count && zip(lastSentValues, values).allSatisfy { prev, next in
+				if next == 0 { return prev == 0 }
+				if prev == 0 { return false }
+				return abs(prev - next) < 0.005
+			}
+			if unchanged {
+				lock.unlock()
+				return
+			}
+			lastSentValues = values
+			activePlayers = players
+			motorValues = values
+		}
+		lock.unlock()
+
+		if let phoneParams, let player = activePlayers.first {
+			let sharpnessOffset = min(max(phoneParams.sharpness - Self.phoneBaseSharpness, -1), 1)
+			try? player.sendParameters([
+				CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: phoneParams.intensity, relativeTime: 0),
+				CHHapticDynamicParameter(parameterID: .hapticSharpnessControl, value: sharpnessOffset, relativeTime: 0),
+			], atTime: CHHapticTimeImmediate)
+		} else if let motorValues {
+			for (player, value) in zip(activePlayers, motorValues) {
+				try? player.sendParameters([
+					CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: value, relativeTime: 0),
+				], atTime: CHHapticTimeImmediate)
+			}
+		}
+	}
+
+	private func rebuildEngines(for controller: GCController?) {
+		let target: RumbleTarget
+		lock.lock()
+		target = _target
+		guard isAttached, _enabled, !_paused, _intensity > 0.001, attachedController === controller else {
+			lock.unlock()
+			return
+		}
+		lock.unlock()
+
+		let controllerHaptics = controller?.haptics
+		let controllerHasHaptics = controllerHaptics != nil
+		var newEngines: [CHHapticEngine] = []
+		var newPlayers: [CHHapticAdvancedPatternPlayer] = []
+		var isPhone = false
+
+		if Self.shouldUseControllerEngine(controllerHasHaptics: controllerHasHaptics, target: target), let haptics = controllerHaptics {
+			let localities: [GCHapticsLocality] =
+				haptics.supportedLocalities.contains(.leftHandle) && haptics.supportedLocalities.contains(.rightHandle)
+				? [.leftHandle, .rightHandle] : [.default]
+			for locality in localities {
+				guard let engine = haptics.createEngine(withLocality: locality) else { continue }
+				if let player = startContinuousPlayer(on: engine, baseSharpness: locality == .rightHandle ? 0.8 : 0.3) {
+					newEngines.append(engine)
+					newPlayers.append(player)
+				}
+			}
+		} else if Self.shouldUsePhoneEngine(
+			controllerHasHaptics: controllerHasHaptics,
+			target: target,
+			deviceSupportsHaptics: CHHapticEngine.capabilitiesForHardware().supportsHaptics
+		) {
+			do {
+				let engine = try CHHapticEngine()
+				engine.playsHapticsOnly = true
+				if let player = startContinuousPlayer(on: engine, baseSharpness: Self.phoneBaseSharpness) {
+					newEngines.append(engine)
+					newPlayers.append(player)
+					isPhone = true
+					log.notice("Haptics: using iPhone Taptic Engine")
+				}
+			} catch {
+				log.error("Phone haptics init failed: \(error.localizedDescription, privacy: .public)")
+			}
+		}
+
+		var oldPlayers: [CHHapticAdvancedPatternPlayer] = []
+		var oldEngines: [CHHapticEngine] = []
+		var installed = false
+
+		lock.lock()
+		if isAttached && _enabled && !_paused && _intensity > 0.001 && _target == target && attachedController === controller {
+			oldPlayers = players
+			oldEngines = engines
+			engines = newEngines
+			players = newPlayers
+			usingPhoneEngine = isPhone
+			needsRestart = false
+			lastSentValues = Array(repeating: 0, count: newPlayers.count)
+			lastSentSharpness = Self.phoneBaseSharpness
+			installed = true
+		}
+		lock.unlock()
+
+		if installed {
+			Self.teardown(players: oldPlayers, engines: oldEngines)
+		} else {
+			Self.teardown(players: newPlayers, engines: newEngines)
+		}
+	}
+
+	private func startContinuousPlayer(on engine: CHHapticEngine, baseSharpness: Float) -> CHHapticAdvancedPatternPlayer? {
+		engine.stoppedHandler = { [weak self] _ in
+			self?.markNeedsRestart()
+		}
+		engine.resetHandler = { [weak self] in
+			self?.markNeedsRestart()
+		}
+		do {
+			try engine.start()
+			let event = CHHapticEvent(
+				eventType: .hapticContinuous,
+				parameters: [
+					CHHapticEventParameter(parameterID: .hapticIntensity, value: 1),
+					CHHapticEventParameter(parameterID: .hapticSharpness, value: baseSharpness),
+				],
+				relativeTime: 0,
+				duration: 30
+			)
+			let pattern = try CHHapticPattern(events: [event], parameters: [])
+			let player = try engine.makeAdvancedPlayer(with: pattern)
+			player.loopEnabled = true
+			try player.sendParameters([CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: 0, relativeTime: 0)], atTime: CHHapticTimeImmediate)
+			try player.start(atTime: CHHapticTimeImmediate)
+			return player
+		} catch {
+			engine.stoppedHandler = { _ in }
+			engine.resetHandler = {}
+			engine.stop()
+			log.error("Haptics: \(error.localizedDescription, privacy: .public)")
+			return nil
+		}
+	}
+
+	private func markNeedsRestart() {
+		lock.lock()
+		needsRestart = true
+		lastSentValues = []
+		lastSentSharpness = -1
+		lock.unlock()
+	}
+
+	private func restartIfNeeded() {
+		var controller: GCController?
+		var oldPlayers: [CHHapticAdvancedPatternPlayer] = []
+		var oldEngines: [CHHapticEngine] = []
+		var shouldRebuild = false
+
+		lock.lock()
+		restartScheduled = false
+		if needsRestart && isAttached && _enabled && !_paused && _intensity > 0.001 {
+			needsRestart = false
+			oldPlayers = players
+			oldEngines = engines
+			players = []
+			engines = []
+			usingPhoneEngine = false
+			lastSentValues = []
+			lastSentSharpness = -1
+			controller = attachedController
+			shouldRebuild = true
+		}
+		lock.unlock()
+
+		Self.teardown(players: oldPlayers, engines: oldEngines)
+		if shouldRebuild {
+			rebuildEngines(for: controller)
+		}
+	}
+
+	private static func zero(players: [CHHapticAdvancedPatternPlayer]) {
+		guard !players.isEmpty else { return }
+		let param = CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: 0, relativeTime: 0)
+		for player in players {
+			try? player.sendParameters([param], atTime: CHHapticTimeImmediate)
+		}
+	}
+
+	private static func teardown(players: [CHHapticAdvancedPatternPlayer], engines: [CHHapticEngine]) {
+		for player in players {
+			try? player.stop(atTime: CHHapticTimeImmediate)
+		}
+		for engine in engines {
+			engine.stoppedHandler = { _ in }
+			engine.resetHandler = {}
+			engine.stop()
 		}
 	}
 }
