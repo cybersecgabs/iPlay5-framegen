@@ -26,7 +26,39 @@ final class ControllerInput {
 		case up(slot: Int)
 	}
 
-	var selectIsTouchpad = false
+	struct TouchpadButtonResolution: Equatable {
+		let touchpadButtonPressed: Bool
+		let shareButtonPressed: Bool
+		let needsVirtualCenterTouch: Bool
+	}
+
+	static let virtualTouchpadSlot = 20
+	static let virtualTouchpadCenter: (x: UInt16, y: UInt16) = (960, 540)
+
+	static func resolveSelectAndTouchpad(
+		selectPressed: Bool,
+		distinctSharePressed: Bool,
+		hardwareTouchpadPressed: Bool,
+		hasPhysicalTouchContact: Bool,
+		selectIsTouchpad: Bool
+	) -> TouchpadButtonResolution {
+		let touchpadButtonPressed = hardwareTouchpadPressed || (selectIsTouchpad && selectPressed)
+		let shareButtonPressed = distinctSharePressed || (!selectIsTouchpad && selectPressed)
+		let needsVirtualCenterTouch = touchpadButtonPressed && !hasPhysicalTouchContact
+		return TouchpadButtonResolution(
+			touchpadButtonPressed: touchpadButtonPressed,
+			shareButtonPressed: shareButtonPressed,
+			needsVirtualCenterTouch: needsVirtualCenterTouch
+		)
+	}
+
+	var selectIsTouchpad = false {
+		didSet {
+			if selectIsTouchpad != oldValue, let pad = controller?.extendedGamepad {
+				padChanged(pad)
+			}
+		}
+	}
 	var phoneMotionEnabled = true
 
 	private(set) var controllerName: String?
@@ -35,6 +67,7 @@ final class ControllerInput {
 	private let motionQueue = OperationQueue()
 	private var observers: [NSObjectProtocol] = []
 	private var touchDown = [false, false]
+	private var virtualTouchpadDown = false
 	private var comboTimer: Timer?
 	private var lastPad = CKPadState()
 
@@ -61,9 +94,11 @@ final class ControllerInput {
 		observers.removeAll()
 		comboTimer?.invalidate()
 		motionManager.stopDeviceMotionUpdates()
+		releaseAllTouches()
 		if let controller {
 			restoreSystemGestures(controller)
 			controller.extendedGamepad?.valueChangedHandler = nil
+			controller.physicalInputProfile.buttons[GCInputButtonShare]?.valueChangedHandler = nil
 			controller.motion?.valueChangedHandler = nil
 			controller.motion?.sensorsActive = false
 		}
@@ -78,9 +113,11 @@ final class ControllerInput {
 		let next = GCController.current.flatMap { candidates.contains($0) ? $0 : nil } ?? candidates.first
 		guard next !== controller else { return }
 
+		releaseAllTouches()
 		if let controller {
 			restoreSystemGestures(controller)
 			controller.extendedGamepad?.valueChangedHandler = nil
+			controller.physicalInputProfile.buttons[GCInputButtonShare]?.valueChangedHandler = nil
 			controller.motion?.valueChangedHandler = nil
 		}
 		controller = next
@@ -90,10 +127,35 @@ final class ControllerInput {
 			startPhoneMotion()
 			return
 		}
-		log.notice("Using controller: \(next.vendorName ?? "?", privacy: .public) (\(next.productCategory, privacy: .public))")
+		let profileKind: String
+		let hasTouchpadBtn: Bool
+		if let ds = pad as? GCDualSenseGamepad {
+			profileKind = "DualSense"
+			let tpBtn: GCControllerButtonInput? = ds.touchpadButton
+			hasTouchpadBtn = tpBtn != nil
+		} else if let ds4 = pad as? GCDualShockGamepad {
+			profileKind = "DualShock 4"
+			let tpBtn: GCControllerButtonInput? = ds4.touchpadButton
+			hasTouchpadBtn = tpBtn != nil
+		} else if pad is GCXboxGamepad {
+			profileKind = "Xbox"
+			hasTouchpadBtn = false
+		} else {
+			profileKind = "ExtendedGamepad"
+			hasTouchpadBtn = false
+		}
+		let hasOptionsBtn = pad.buttonOptions != nil
+		let hasShareBtn = pad.buttons[GCInputButtonShare] != nil
+		log.notice("Using controller: \(next.vendorName ?? "?", privacy: .public) (\(next.productCategory, privacy: .public), profile=\(profileKind, privacy: .public), options=\(hasOptionsBtn), share=\(hasShareBtn), touchpadBtn=\(hasTouchpadBtn))")
 
 		claimSystemGestures(next)
 		pad.valueChangedHandler = { [weak self] pad, _ in self?.padChanged(pad) }
+		if let shareBtn = pad.buttons[GCInputButtonShare], shareBtn !== pad.buttonOptions {
+			shareBtn.valueChangedHandler = { [weak self, weak pad] _, _, _ in
+				guard let self, let pad else { return }
+				self.padChanged(pad)
+			}
+		}
 
 		if let motion = next.motion, motion.hasRotationRate {
 			motionManager.stopDeviceMotionUpdates()
@@ -103,6 +165,17 @@ final class ControllerInput {
 			startPhoneMotion()
 		}
 		padChanged(pad)
+	}
+
+	private func releaseAllTouches() {
+		if virtualTouchpadDown {
+			virtualTouchpadDown = false
+			onTouch?(.up(slot: Self.virtualTouchpadSlot))
+		}
+		for slot in 0..<touchDown.count where touchDown[slot] {
+			touchDown[slot] = false
+			onTouch?(.up(slot: slot))
+		}
 	}
 
 	private func claimSystemGestures(_ controller: GCController) {
@@ -138,14 +211,34 @@ final class ControllerInput {
 		set(pad.buttonMenu.isPressed, CK_BUTTON_OPTIONS)
 		set(pad.buttonHome?.isPressed ?? false, CK_BUTTON_PS)
 
-		let selectPressed = pad.buttonOptions?.isPressed ?? false
+		let optionsBtn = pad.buttonOptions
+		let shareBtn = pad.buttons[GCInputButtonShare]
+		let primarySelectBtn = optionsBtn ?? shareBtn
+		let distinctShareBtn = (shareBtn !== primarySelectBtn) ? shareBtn : nil
+
+		let selectPressed = primarySelectBtn?.isPressed ?? false
+		let distinctSharePressed = distinctShareBtn?.isPressed ?? false
+
+		var hardwareTouchpadPressed = false
 		if let ds = pad as? GCDualSenseGamepad {
-			set(selectPressed, CK_BUTTON_SHARE)
-			set(ds.touchpadButton.isPressed, CK_BUTTON_TOUCHPAD)
+			let tpBtn: GCControllerButtonInput? = ds.touchpadButton
+			hardwareTouchpadPressed = tpBtn?.isPressed ?? false
 			dualSenseTouch(ds)
-		} else {
-			set(selectPressed, selectIsTouchpad ? CK_BUTTON_TOUCHPAD : CK_BUTTON_SHARE)
+		} else if let ds4 = pad as? GCDualShockGamepad {
+			let tpBtn: GCControllerButtonInput? = ds4.touchpadButton
+			hardwareTouchpadPressed = tpBtn?.isPressed ?? false
 		}
+
+		let hasPhysicalTouchContact = touchDown[0] || touchDown[1]
+		let resolved = Self.resolveSelectAndTouchpad(
+			selectPressed: selectPressed,
+			distinctSharePressed: distinctSharePressed,
+			hardwareTouchpadPressed: hardwareTouchpadPressed,
+			hasPhysicalTouchContact: hasPhysicalTouchContact,
+			selectIsTouchpad: selectIsTouchpad
+		)
+		set(resolved.shareButtonPressed, CK_BUTTON_SHARE)
+		set(resolved.touchpadButtonPressed, CK_BUTTON_TOUCHPAD)
 
 		var state = CKPadState()
 		state.buttons = b
@@ -157,7 +250,17 @@ final class ControllerInput {
 		state.right_y = Self.axis(-pad.rightThumbstick.yAxis.value)
 
 		lastPad = state
-		onPad?(state)
+		if resolved.needsVirtualCenterTouch && !virtualTouchpadDown {
+			virtualTouchpadDown = true
+			onTouch?(.down(slot: Self.virtualTouchpadSlot, x: Self.virtualTouchpadCenter.x, y: Self.virtualTouchpadCenter.y))
+			onPad?(state)
+		} else if !resolved.needsVirtualCenterTouch && virtualTouchpadDown {
+			onPad?(state)
+			virtualTouchpadDown = false
+			onTouch?(.up(slot: Self.virtualTouchpadSlot))
+		} else {
+			onPad?(state)
+		}
 		updateMenuCombo(select: selectPressed, start: pad.buttonMenu.isPressed)
 	}
 
