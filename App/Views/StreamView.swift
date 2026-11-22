@@ -9,6 +9,7 @@ struct StreamView: View {
 	@Environment(\.scenePhase) private var scenePhase
 	@State private var session: StreamSession?
 	@State private var showMenu = false
+	@State private var showQuickDrawer = false
 	@State private var showMenuButton = false
 	@State private var hideMenuButton: Task<Void, Never>?
 	@State private var folded = false
@@ -79,6 +80,9 @@ struct StreamView: View {
 		.onChange(of: scenePhase) { _, phase in
 			session?.setPaused(phase != .active || folded || portrait)
 		}
+		.onChange(of: settingsStore.settings) { _, new in
+			session?.apply(new)
+		}
 		.sheet(isPresented: $showMenu) { menu }
 	}
 
@@ -142,6 +146,26 @@ struct StreamView: View {
 			} else if portrait {
 				rotateOverlay
 			}
+
+			if showQuickDrawer {
+				QuickTuningDrawer(
+					settings: Bindable(settingsStore).settings,
+					phone: phone,
+					onOpenFullMenu: {
+						showQuickDrawer = false
+						showMenu = true
+					},
+					onDisconnect: {
+						showQuickDrawer = false
+						dismiss()
+					},
+					onClose: {
+						withAnimation(.easeIn(duration: 0.18)) { showQuickDrawer = false }
+					}
+				)
+				.transition(.move(edge: .trailing).combined(with: .opacity))
+				.zIndex(10)
+			}
 		}
 	}
 
@@ -157,13 +181,18 @@ struct StreamView: View {
 		if let orientation = interfaceOrientation {
 			session.input.interfaceOrientation = orientation
 		}
-		session.input.onMenuCombo = { showMenu = true }
+		session.input.onMenuCombo = {
+			hideMenuButton?.cancel()
+			showMenuButton = false
+			withAnimation(.easeOut(duration: 0.2)) { showQuickDrawer = true }
+		}
 		self.session = session
 		session.start()
 	}
 
 	private func stop() {
 		stopped = true
+		showQuickDrawer = false
 		orientationUpdateWork?.cancel()
 		orientationUpdateWork = nil
 		hideMenuButton?.cancel()
@@ -207,6 +236,7 @@ struct StreamView: View {
 	// MARK: - Menu button (top-right hot corner)
 
 	private func revealMenuButton() {
+		guard !showQuickDrawer else { return }
 		withAnimation(.easeOut(duration: 0.2)) { showMenuButton = true }
 		hideMenuButton?.cancel()
 		hideMenuButton = Task { @MainActor in
@@ -329,7 +359,7 @@ struct StreamView: View {
 		Button {
 			hideMenuButton?.cancel()
 			showMenuButton = false
-			showMenu = true
+			withAnimation(.easeOut(duration: 0.2)) { showQuickDrawer = true }
 		} label: {
 			Image(systemName: "gearshape.fill")
 				.font(.title2)
@@ -510,7 +540,6 @@ struct StreamView: View {
 			.navigationTitle(console.name)
 			.navigationBarTitleDisplayMode(.inline)
 		}
-		.onChange(of: store.settings) { _, new in session?.apply(new) }
 	}
 }
 
