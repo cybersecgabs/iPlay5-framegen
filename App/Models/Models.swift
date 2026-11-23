@@ -276,6 +276,9 @@ struct StreamSettings: Codable, Equatable {
 	/// Optional: ride out network hitches (adaptive reorder wait 16-40 ms, decode through lost
 	/// frames while waiting for IDR, and adaptive 1-2 frame jitter buffer when Frame Gen is off).
 	var networkSmoothing: Bool = false
+	/// Experimental: offer the PS5 the newer Takion v20 stream protocol. Off by default;
+	/// the console picks, staying on v12 if declined.
+	var takionV20: Bool = false
 
 	/// HDR needs HEVC
 	var effectiveCodec: VideoCodecChoice { hdr ? .h265 : codec }
@@ -326,6 +329,7 @@ struct StreamSettings: Codable, Equatable {
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
 		highRefreshDisplay = try c.decodeIfPresent(Bool.self, forKey: .highRefreshDisplay) ?? d.highRefreshDisplay
 		networkSmoothing = try c.decodeIfPresent(Bool.self, forKey: .networkSmoothing) ?? d.networkSmoothing
+		takionV20 = try c.decodeIfPresent(Bool.self, forKey: .takionV20) ?? d.takionV20
 	}
 
 	mutating func applyGTA6Preset() {

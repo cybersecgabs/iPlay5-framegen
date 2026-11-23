@@ -1,7 +1,5 @@
-diff --git a/src/takion.c b/src/takion.c
-index ad2dc31..8d5ee5c 100644
---- a/src/takion.c
-+++ b/src/takion.c
+--- a/src/takion.c	2026-11-22 18:53:43
++++ b/src/takion.c	2026-11-22 18:54:52
 @@ -39,16 +39,23 @@
  // VERY similar to SCTP, see RFC 4960
  
@@ -29,7 +27,7 @@ index ad2dc31..8d5ee5c 100644
  #define TAKION_AV_REORDER_TIMEOUT_MAX_US 40000
  // Wait this much longer than the late packet needed
  #define TAKION_AV_REORDER_LATE_MARGIN_US 4000
-@@ -200,6 +207,24 @@ static ChiakiErrorCode takion_recv_message_cookie_ack(ChiakiTakion *takion);
+@@ -200,6 +207,24 @@
  static void takion_handle_packet_av(ChiakiTakion *takion, uint8_t base_type, uint8_t *buf, size_t buf_size);
  static ChiakiErrorCode takion_read_extra_sock_messages(ChiakiTakion *takion);
  
@@ -54,7 +52,7 @@ index ad2dc31..8d5ee5c 100644
  CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, ChiakiTakionConnectInfo *info, chiaki_socket_t *sock)
  {
  	ChiakiErrorCode ret = CHIAKI_ERR_SUCCESS;
-@@ -282,8 +307,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
+@@ -289,8 +314,7 @@
  			CHIAKI_LOGE(takion->log, "Takion had problem reading extra messages from socket using PSN Connection with error: " CHIAKI_SOCKET_ERROR_FMT, CHIAKI_SOCKET_ERROR_VALUE);
  			goto error_sock;
  		}
@@ -64,7 +62,7 @@ index ad2dc31..8d5ee5c 100644
  		if(r < 0)
  		{
  			CHIAKI_LOGE(takion->log, "Takion failed to setsockopt SO_RCVBUF: " CHIAKI_SOCKET_ERROR_FMT, CHIAKI_SOCKET_ERROR_VALUE);
-@@ -370,8 +394,7 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, Chiaki
+@@ -377,8 +401,7 @@
  			ret = CHIAKI_ERR_NETWORK;
  			goto error_pipe;
  		}

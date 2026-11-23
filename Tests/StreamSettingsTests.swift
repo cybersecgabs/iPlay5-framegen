@@ -225,5 +225,16 @@ final class StreamSettingsTests: XCTestCase {
 
 		let legacy = try JSONDecoder().decode(StreamSettings.self, from: #"{"fps":60}"#.data(using: .utf8)!)
 		XCTAssertFalse(legacy.networkSmoothing)
+		XCTAssertFalse(legacy.takionV20)
+	}
+
+	func testTakionV20SettingDefaultsOffAndRoundTrips() throws {
+		XCTAssertFalse(StreamSettings().takionV20)
+
+		var settings = StreamSettings()
+		settings.takionV20 = true
+		let data = try JSONEncoder().encode(settings)
+		let decoded = try JSONDecoder().decode(StreamSettings.self, from: data)
+		XCTAssertTrue(decoded.takionV20)
 	}
 }

@@ -15,10 +15,12 @@
 #   vendor/chiaki-ng/lib/protobuf/takion.proto if a chiaki-ng bump changes it.
 # - chiaki-ng's lib/src and lib/include are copied into the build directory and
 #   patches/*.patch are applied to the copy (the submodule stays pristine).
-#   0001-network-smoothing.patch adds the opt-in network smoothing mode (adaptive
+#   0001-takion-v20.patch adds the opt-in Takion v20 mode, ported from P5M
+#   (https://github.com/beecrepaldi-afk/P5M-mac, AGPL-3.0, mac/TAKION-V20.md).
+#   0002-network-smoothing.patch adds the opt-in network smoothing mode (adaptive
 #   video reorder wait, decoding through a lost frame while waiting for the IDR,
-#   and the counters behind ck_session_net_stats).
-#   0002-high-bitrate-buffers.patch raises the local SO_RCVBUF (falling back if the
+#   and the counters behind ck_session_net_stats). It applies on top of 0001.
+#   0003-high-bitrate-buffers.patch raises the local SO_RCVBUF (falling back if the
 #   kernel refuses; the advertised a_rwnd is unchanged) and enlarges the video
 #   reorder queue so 100-200 Mbps streams don't overflow them.
 #   Regenerate a patch against a pristine copy of vendor/chiaki-ng/lib with

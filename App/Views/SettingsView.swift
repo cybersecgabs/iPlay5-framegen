@@ -88,6 +88,12 @@ struct StreamSettingsForm: View {
 		}
 
 		Section {
+			Toggle("Takion v20 protocol (experimental)", isOn: $settings.takionV20)
+		} footer: {
+			Text("Experimental: offers the PS5 the newer stream protocol that recent official apps use. Off by default. The PS5 decides; if it doesn't answer, the stream stays on v12. There's no measured latency gain yet, so compare with it off. The stats overlay shows which version is in use. Changing this reconnects the stream.")
+		}
+
+		Section {
 			VStack(alignment: .leading, spacing: 6) {
 				HStack {
 					Text("Zoom")
