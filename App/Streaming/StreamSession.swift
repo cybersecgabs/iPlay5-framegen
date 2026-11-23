@@ -30,6 +30,25 @@ struct StreamStats: Equatable {
 	var controller: String?
 	/// The screen's refresh rate, 0 if unknown
 	var displayHz: Double = 0
+	/// Network smoothing (nil when off): late packets, freezes ridden through, etc.
+	var smoothing: SmoothingStats?
+}
+
+/// Network smoothing counters. Totals since connecting, except the current wait and depth.
+struct SmoothingStats: Equatable {
+	/// Video packets that turned up after we'd stopped waiting, and ones given up on
+	var packetsLate = 0
+	var packetsSkipped = 0
+	/// Current wait for a missing video packet
+	var waitMs: Double = 0
+	/// Frames error correction couldn't rebuild (each would have frozen the picture without smoothing)
+	var fecFailures = 0
+	/// Frames decoded against an older frame because theirs was lost
+	var framesPatched = 0
+	/// Frames held back right now, dropped to keep the delay bounded, and times the buffer ran dry
+	var heldFrames = 0
+	var droppedFrames = 0
+	var underruns = 0
 }
 
 /// One Remote Play connection: chiaki session + decoder + renderer + audio + input.
@@ -88,6 +107,10 @@ final class StreamSession {
 	@ObservationIgnored private var reconnectAttempt = 0
 	@ObservationIgnored private var reconnectWork: DispatchWorkItem?
 	@ObservationIgnored private var sessionGeneration = 0
+	@ObservationIgnored private let pacerLock = NSLock()
+	@ObservationIgnored private var jitterPacer: NetworkJitterPacer?
+	/// Video thread: frames were lost before the next decoded buffer arrives
+	@ObservationIgnored private var pendingLostFrame = false
 	/// In another app: the connection is kept up for as long as iOS lets us run,
 	/// but there's no decoding (VideoToolbox can't decode in the background).
 	/// Read from the video thread.
@@ -154,9 +177,13 @@ final class StreamSession {
 		enhancer.setPaused(paused)
 		self.enhancer = enhancer
 
+		pendingLostFrame = false
+		configureJitterPacer()
+		pacerLock.withLock({ jitterPacer })?.reset()
+
 		let codec = settings.effectiveCodec
 		let decoder = VideoDecoder(hevc: codec == .h265, tenBit: settings.hdr)
-		decoder.onFrame = { [weak enhancer] frame in enhancer?.submit(frame, arrivalTime: CACurrentMediaTime()) }
+		decoder.onFrame = { [weak self] frame in self?.handleDecodedFrame(frame) }
 		self.decoder = decoder
 		renderer.configure(hdr: settings.hdr, displayMode: settings.displayMode, upscalingMode: settings.upscalingMode, zoomLevel: settings.zoomLevel, colorAdjustments: settings.colorAdjustments)
 		renderer.setPaused(paused)
@@ -175,6 +202,7 @@ final class StreamSession {
 		config.enable_keyboard = true
 		config.packet_loss_max = 0.05
 		config.verbose_log = false
+		config.network_smoothing = settings.networkSmoothing
 		withUnsafeMutableBytes(of: &config.regist_key) { _ = console.registKey.prefix(16).copyBytes(to: $0) }
 		withUnsafeMutableBytes(of: &config.rp_key) { _ = console.rpKey.prefix(16).copyBytes(to: $0) }
 
@@ -366,12 +394,13 @@ final class StreamSession {
 		}
 	}
 
-	/// Applies new settings. Codec/resolution/bitrate/HDR changes need a reconnect.
+	/// Applies new settings. Codec/resolution/bitrate/HDR/network-smoothing changes need a reconnect.
 	/// Frame Gen and Upscaling apply live without interrupting the stream.
 	func apply(_ new: StreamSettings) {
 		let needsReconnect =
 			new.resolution != settings.resolution || new.fps != settings.fps || new.bitrateMbps != settings.bitrateMbps
 			|| new.effectiveCodec != settings.effectiveCodec || new.hdr != settings.hdr
+			|| new.networkSmoothing != settings.networkSmoothing
 		settings = new
 		input.selectIsTouchpad = new.selectIsTouchpad
 		input.shortcutsEnabled = new.controllerShortcuts
@@ -383,6 +412,7 @@ final class StreamSession {
 			teardown()
 			start()
 		} else {
+			configureJitterPacer()
 			renderer?.configure(hdr: new.hdr, displayMode: new.displayMode, upscalingMode: new.upscalingMode, zoomLevel: new.zoomLevel, colorAdjustments: new.colorAdjustments)
 			enhancer?.configure(
 				upscalingMode: new.upscalingMode,
@@ -394,6 +424,47 @@ final class StreamSession {
 		}
 	}
 
+	private func configureJitterPacer() {
+		let wantsPacer = settings.networkSmoothing && settings.frameGenMode == .off
+		let screenHz = settings.highRefreshDisplay ? UIScreen.main.maximumFramesPerSecond : 60
+		let fps = settings.fps
+		var oldPacer: NetworkJitterPacer?
+		let activePacer: NetworkJitterPacer? = pacerLock.withLock {
+			if wantsPacer {
+				if jitterPacer == nil {
+					jitterPacer = NetworkJitterPacer { [weak self] pb, wasLost in
+						guard let self else { return }
+						if wasLost { self.enhancer?.markDiscontinuity() }
+						self.enhancer?.submit(pb, arrivalTime: CACurrentMediaTime())
+					}
+				}
+				return jitterPacer
+			} else {
+				oldPacer = jitterPacer
+				jitterPacer = nil
+				pendingLostFrame = false
+				return nil
+			}
+		}
+		oldPacer?.stop()
+		activePacer?.configure(fps: fps, screenHz: screenHz)
+	}
+
+	private func handleDecodedFrame(_ pixelBuffer: CVPixelBuffer) {
+		let (pacer, lost) = pacerLock.withLock { () -> (NetworkJitterPacer?, Bool) in
+			let lost = pendingLostFrame
+			pendingLostFrame = false
+			return (jitterPacer, lost)
+		}
+		if let pacer, pacer.submit(pixelBuffer, lost: lost) {
+			return
+		}
+		if lost {
+			enhancer?.markDiscontinuity()
+		}
+		enhancer?.submit(pixelBuffer, arrivalTime: CACurrentMediaTime())
+	}
+
 	func handleDisplayTick(targetTimestamp: Double, vsyncInterval: Double) {
 		guard settings.frameGenMode != .off, !paused else { return }
 		guard let pb = enhancer?.popPacedFrame(forDisplayTimestamp: targetTimestamp, vsyncInterval: vsyncInterval) else { return }
@@ -403,6 +474,9 @@ final class StreamSession {
 	func setPaused(_ paused: Bool) {
 		guard paused != self.paused else { return }
 		self.paused = paused
+		if paused {
+			pacerLock.withLock({ jitterPacer })?.reset()
+		}
 		enhancer?.setPaused(paused)
 		renderer?.setPaused(paused)
 		audio.muted = paused
@@ -461,6 +535,13 @@ final class StreamSession {
 			ck_session_destroy(handle)
 		}
 		handle = nil
+		let stoppedPacer: NetworkJitterPacer? = pacerLock.withLock {
+			let old = jitterPacer
+			jitterPacer = nil
+			pendingLostFrame = false
+			return old
+		}
+		stoppedPacer?.stop()
 		decoder?.invalidate()
 		decoder = nil
 		enhancer?.invalidate()
@@ -472,17 +553,28 @@ final class StreamSession {
 
 	// MARK: - Callbacks (chiaki threads)
 
+	private func noteVideoDiscontinuity() {
+		let hasPacer = pacerLock.withLock { () -> Bool in
+			guard jitterPacer != nil else { return false }
+			pendingLostFrame = true
+			return true
+		}
+		if !hasPacer {
+			enhancer?.markDiscontinuity()
+		}
+	}
+
 	private func handleVideo(_ buf: UnsafePointer<UInt8>, _ size: Int, _ lost: Int32) -> Bool {
 		if lost > 0 {
 			lostFrames &+= lost
-			enhancer?.markDiscontinuity()
+			noteVideoDiscontinuity()
 		}
 		// Background decoding fails, and each failure would ask for another keyframe.
 		// Coming back unpauses the stream, which asks for one.
 		guard let decoder, !backgrounded else { return true }
 		let ok = decoder.decode(buf, count: size)
 		if !ok {
-			enhancer?.markDiscontinuity()
+			noteVideoDiscontinuity()
 		}
 		return ok
 	}
@@ -641,6 +733,23 @@ final class StreamSession {
 			s.bitrateMbps = ck_session_measured_bitrate_mbps(handle)
 			s.rttMs = ck_session_rtt_ms(handle)
 			s.packetLoss = ck_session_packet_loss(handle)
+			if settings.networkSmoothing {
+				var net = CKNetStats()
+				ck_session_net_stats(handle, &net)
+				var smoothing = SmoothingStats()
+				smoothing.packetsLate = Int(net.packets_late)
+				smoothing.packetsSkipped = Int(net.packets_skipped)
+				smoothing.waitMs = net.reorder_wait_ms
+				smoothing.fecFailures = Int(net.fec_failures)
+				smoothing.framesPatched = Int(net.frames_patched)
+				if let pacer = pacerLock.withLock({ jitterPacer }) {
+					let pStats = pacer.stats
+					smoothing.heldFrames = pacer.currentDepth
+					smoothing.droppedFrames = pStats.dropped
+					smoothing.underruns = pStats.underruns
+				}
+				s.smoothing = smoothing
+			}
 		}
 		s.width = decoder.dimensions.width
 		s.height = decoder.dimensions.height

@@ -149,6 +149,10 @@ extern "C"
         /// Upstream default is 0.05 (5%).
         double packet_loss_max;
         bool verbose_log;
+        /// Optional: ride out network hitches. Waits longer for late video packets when
+        /// they turn up late (16-40 ms, adapting), and keeps decoding while a lost frame's
+        /// replacement keyframe is on its way instead of freezing (patches/0001).
+        bool network_smoothing;
     } CKSessionConfig;
 
     typedef struct CKSession CKSession;
@@ -168,6 +172,24 @@ extern "C"
     double ck_session_packet_loss(CKSession *session);
     /// Round trip time measured while connecting, in milliseconds.
     double ck_session_rtt_ms(CKSession *session);
+
+    /// Running totals since the stream connected (zeros before that).
+    typedef struct
+    {
+        /// Video packets that arrived after we'd given up waiting for them
+        uint32_t packets_late;
+        /// Video packets given up on (lost, or later than the wait)
+        uint32_t packets_skipped;
+        /// Frames error correction couldn't rebuild. Without network smoothing, each one
+        /// freezes the picture until the console sends a keyframe.
+        uint32_t fec_failures;
+        /// Frames decoded against an older frame because the one they needed was lost
+        uint32_t frames_patched;
+        /// Current wait for a missing video packet, in milliseconds
+        double reorder_wait_ms;
+    } CKNetStats;
+
+    void ck_session_net_stats(CKSession *session, CKNetStats *out);
 
     /// Text input for a console text box: send the whole text on every change,
     /// then accept (submit) or reject (cancel).

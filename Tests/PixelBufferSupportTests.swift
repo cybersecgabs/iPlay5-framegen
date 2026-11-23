@@ -213,4 +213,38 @@ final class PixelBufferSupportTests: XCTestCase {
 		]
 		XCTAssertFalse(PixelBufferSupport.isBufferCompatible(pb, width: 1280, height: 720, withAttributes: tenBitOnly))
 	}
+
+	func testMetalFX4KTargetSize() {
+		let iphone17ProLandscape = CGSize(width: 2622, height: 1206)
+
+		let s1080 = PixelBufferSupport.computeMetalFX4KTargetSize(inputWidth: 1920, inputHeight: 1080)
+		XCTAssertEqual(s1080?.width, 3840)
+		XCTAssertEqual(s1080?.height, 2160)
+
+		let s720 = PixelBufferSupport.computeMetalFX4KTargetSize(inputWidth: 1280, inputHeight: 720)
+		XCTAssertEqual(s720?.width, 3840)
+		XCTAssertEqual(s720?.height, 2160)
+
+		let viaMode = PixelBufferSupport.computeUpscaleTargetSize(
+			inputWidth: 1920,
+			inputHeight: 1080,
+			drawableSize: iphone17ProLandscape,
+			zoomLevel: 0.0,
+			upscalingMode: .metalFX4K
+		)
+		XCTAssertEqual(viaMode?.width, 3840)
+		XCTAssertEqual(viaMode?.height, 2160)
+
+		XCTAssertNil(PixelBufferSupport.computeMetalFX4KTargetSize(inputWidth: 3840, inputHeight: 2160))
+		XCTAssertNil(PixelBufferSupport.computeMetalFX4KTargetSize(inputWidth: 0, inputHeight: 1080))
+		XCTAssertNil(
+			PixelBufferSupport.computeUpscaleTargetSize(
+				inputWidth: 1920,
+				inputHeight: 1080,
+				drawableSize: iphone17ProLandscape,
+				zoomLevel: 0.0,
+				upscalingMode: .bicubic
+			)
+		)
+	}
 }

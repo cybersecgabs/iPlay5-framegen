@@ -39,6 +39,7 @@ private struct BlitUniforms {
 	var gamma: Float
 	var bt2020: Int32
 	var sharpness: Float
+	var downsample4K: Int32
 }
 
 struct RendererSnapshot: Equatable {
@@ -185,7 +186,7 @@ final class MetalRenderer {
 			self.zoomLevel = resolvedZoom
 			self.upscalingMode = upscalingMode
 			self.colorAdjustments = clampedColor
-			if upscalingMode != .metalFX {
+			if !upscalingMode.usesMetalFX {
 				_fallbackReason = nil
 			}
 			return changed
@@ -310,15 +311,17 @@ final class MetalRenderer {
 		let sharpness = Float(color.sharpness)
 
 		#if !targetEnvironment(simulator)
-		if upscaling == .metalFX,
+		if upscaling.usesMetalFX,
 			MTLFXSpatialScalerDescriptor.supportsDevice(device),
 			let targetSize = PixelBufferSupport.computeUpscaleTargetSize(
 				inputWidth: videoW,
 				inputHeight: videoH,
 				drawableSize: target,
-				zoomLevel: zoom
+				zoomLevel: zoom,
+				upscalingMode: upscaling
 			)
 		{
+			let is4K = upscaling == .metalFX4K
 			let resources = ensureMetalFXResources(
 				inputWidth: videoW,
 				inputHeight: videoH,
@@ -374,7 +377,8 @@ final class MetalRenderer {
 					saturation: 1,
 					gamma: 1,
 					bt2020: 0,
-					sharpness: sharpness
+					sharpness: sharpness,
+					downsample4K: is4K ? 1 : 0
 				)
 				let pass3 = MTLRenderPassDescriptor()
 				pass3.colorAttachments[0].texture = drawable.texture
@@ -397,7 +401,7 @@ final class MetalRenderer {
 				commandBuffer.commit()
 
 				recordPresentation(
-					upscaler: "MetalFX \(videoW)x\(videoH)→\(targetSize.width)x\(targetSize.height)",
+					upscaler: "\(is4K ? "MetalFX 4K" : "MetalFX") \(videoW)x\(videoH)→\(targetSize.width)x\(targetSize.height)",
 					fallback: nil,
 					inW: videoW,
 					inH: videoH,
@@ -410,7 +414,7 @@ final class MetalRenderer {
 		#endif
 
 		// Single-pass render (Off, Catmull-Rom, pre-upscaled VT Super Res, or MetalFX fallback)
-		let useBicubic = (upscaling == .bicubic || upscaling == .metalFX) && scale > 1.01
+		let useBicubic = (upscaling == .bicubic || upscaling.usesMetalFX) && scale > 1.01
 		var uniforms = RenderUniforms(
 			ndcScale: ndcScale,
 			uvOrigin: uvOrigin,
@@ -452,10 +456,10 @@ final class MetalRenderer {
 
 		let label: String
 		let fallback: String?
-		if upscaling == .metalFX && scale <= 1.01 {
+		if upscaling.usesMetalFX && scale <= 1.01 {
 			label = "Native 1:1"
 			fallback = nil
-		} else if upscaling == .metalFX {
+		} else if upscaling.usesMetalFX {
 			label = "Catmull-Rom (MetalFX fallback)"
 			fallback = lock.withLock { _fallbackReason }
 		} else if useBicubic {
@@ -522,17 +526,20 @@ final class MetalRenderer {
 		}
 		var outW = drawable.texture.width
 		var outH = drawable.texture.height
+		var didDownsample4K = false
 
 		#if !targetEnvironment(simulator)
-		if upscaling == .metalFX,
+		if upscaling.usesMetalFX,
 			MTLFXSpatialScalerDescriptor.supportsDevice(device),
 			let targetSize = PixelBufferSupport.computeUpscaleTargetSize(
 				inputWidth: videoW,
 				inputHeight: videoH,
 				drawableSize: target,
-				zoomLevel: zoom
+				zoomLevel: zoom,
+				upscalingMode: upscaling
 			)
 		{
+			let is4K = upscaling == .metalFX4K
 			let res = ensureMetalFXResources(
 				inputWidth: videoW,
 				inputHeight: videoH,
@@ -550,7 +557,8 @@ final class MetalRenderer {
 				scaler.inputContentHeight = videoH
 				scaler.encode(commandBuffer: commandBuffer)
 				texToBlit = outTex
-				label = "MetalFX \(videoW)x\(videoH)→\(targetSize.width)x\(targetSize.height)"
+				didDownsample4K = is4K
+				label = "\(is4K ? "MetalFX 4K" : "MetalFX") \(videoW)x\(videoH)→\(targetSize.width)x\(targetSize.height)"
 				outW = targetSize.width
 				outH = targetSize.height
 			}
@@ -572,7 +580,8 @@ final class MetalRenderer {
 			saturation: Float(color.saturation),
 			gamma: Float(color.gamma),
 			bt2020: isBT2020,
-			sharpness: Float(color.sharpness)
+			sharpness: Float(color.sharpness),
+			downsample4K: didDownsample4K ? 1 : 0
 		)
 		let pass = MTLRenderPassDescriptor()
 		pass.colorAttachments[0].texture = drawable.texture
@@ -621,7 +630,7 @@ final class MetalRenderer {
 
 		let candidates: [MTLPixelFormat]
 		switch drawableFormat {
-		case .bgr10a2Unorm: candidates = [.bgr10a2Unorm, .rgba16Float]
+		case .bgr10a2Unorm: candidates = [.rgba16Float, .bgr10a2Unorm]
 		case .rgba16Float: candidates = [.rgba16Float]
 		default: candidates = [.bgra8Unorm]
 		}
@@ -638,10 +647,12 @@ final class MetalRenderer {
 
 			let inDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: inputWidth, height: inputHeight, mipmapped: false)
 			inDesc.storageMode = .private
+			inDesc.hazardTrackingMode = .tracked
 			inDesc.usage = scaler.colorTextureUsage.union([.renderTarget, .shaderRead])
 
 			let outDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: outputWidth, height: outputHeight, mipmapped: false)
 			outDesc.storageMode = .private
+			outDesc.hazardTrackingMode = .tracked
 			outDesc.usage = scaler.outputTextureUsage.union([.shaderRead])
 
 			guard let inTex = device.makeTexture(descriptor: inDesc),

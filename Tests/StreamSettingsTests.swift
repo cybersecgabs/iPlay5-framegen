@@ -203,4 +203,27 @@ final class StreamSettingsTests: XCTestCase {
 		XCTAssertEqual(gta6.statsOverlayMode, .mini)
 		XCTAssertTrue(gta6.showStats)
 	}
+
+	func testNetworkSmoothingAndMetalFX4KSettings() throws {
+		let defaults = StreamSettings()
+		XCTAssertFalse(defaults.networkSmoothing)
+		XCTAssertTrue(UpscalingMode.metalFX.usesMetalFX)
+		XCTAssertTrue(UpscalingMode.metalFX4K.usesMetalFX)
+		XCTAssertFalse(UpscalingMode.off.usesMetalFX)
+		XCTAssertFalse(UpscalingMode.bicubic.usesMetalFX)
+		XCTAssertFalse(UpscalingMode.vtSuperRes.usesMetalFX)
+
+		var settings = StreamSettings()
+		settings.networkSmoothing = true
+		settings.bitrateMbps = 200
+		settings.upscalingMode = .metalFX4K
+		let encoded = try JSONEncoder().encode(settings)
+		let decoded = try JSONDecoder().decode(StreamSettings.self, from: encoded)
+		XCTAssertTrue(decoded.networkSmoothing)
+		XCTAssertEqual(decoded.bitrateMbps, 200)
+		XCTAssertEqual(decoded.upscalingMode, .metalFX4K)
+
+		let legacy = try JSONDecoder().decode(StreamSettings.self, from: #"{"fps":60}"#.data(using: .utf8)!)
+		XCTAssertFalse(legacy.networkSmoothing)
+	}
 }

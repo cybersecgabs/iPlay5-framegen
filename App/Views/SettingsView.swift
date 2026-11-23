@@ -49,7 +49,7 @@ struct StreamSettingsForm: View {
 		} header: {
 			Text("Frame Gen & Upscaling")
 		} footer: {
-			Text("Applies live without reconnecting. \(EnhancerCapabilities.current.shortStatus)")
+			Text("Applies live without reconnecting. MetalFX 4K enlarges to 3840×2160 before downsampling for extra sharpness at higher GPU and battery usage. \(EnhancerCapabilities.current.shortStatus)")
 		}
 
 		Section {
@@ -66,7 +66,7 @@ struct StreamSettingsForm: View {
 					Spacer()
 					Text("\(settings.bitrateMbps) Mbps").foregroundStyle(.secondary).monospacedDigit()
 				}
-				Slider(value: Binding(get: { Double(settings.bitrateMbps) }, set: { settings.bitrateMbps = Int($0) }), in: 5...100, step: 5)
+				Slider(value: Binding(get: { Double(settings.bitrateMbps) }, set: { settings.bitrateMbps = Int($0) }), in: 5...200, step: 5)
 			}
 			Picker("Codec", selection: $settings.codec) {
 				ForEach(VideoCodecChoice.allCases) { Text($0.label).tag($0) }
@@ -77,6 +77,14 @@ struct StreamSettingsForm: View {
 			Text("Video")
 		} footer: {
 			Text("PS5 Remote Play tops out at 1080p60. The PS5 may cap the bitrate below what you ask for, so watch the stats overlay. HDR needs H.265 and HDR turned on in the PS5's video output settings. Changing these reconnects the stream.")
+		}
+
+		Section {
+			Toggle("Smooth network hiccups", isOn: $settings.networkSmoothing)
+		} header: {
+			Text("Network")
+		} footer: {
+			Text("For Wi-Fi that stutters. Waits a little longer for late video (16–40 ms, adapting), keeps the picture moving (briefly smeared) instead of freezing when a frame is lost, and when Frame Gen is off evens out uneven frames by holding one or two back (~17 ms per frame held only during hiccups, returning to normal once calm). The stats overlay shows what it's doing. Changing this reconnects the stream.")
 		}
 
 		Section {

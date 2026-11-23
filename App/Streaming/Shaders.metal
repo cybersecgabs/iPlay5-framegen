@@ -115,12 +115,11 @@ static float apply_cas_luma(texture2d<float> lumaTex, sampler s, float2 uv, floa
 	return saturate((centerY + (b + d + f + h) * w) / (1.0 + 4.0 * w));
 }
 
-static float3 apply_cas_rgb(texture2d<float> tex, sampler s, float2 uv, float2 texSize, float3 center, float sharpness) {
-	float2 texelStep = 1.0 / max(texSize, float2(1.0));
-	float3 b = saturate(tex.sample(s, uv + float2(0.0, -texelStep.y)).rgb);
-	float3 d = saturate(tex.sample(s, uv + float2(-texelStep.x, 0.0)).rgb);
-	float3 f = saturate(tex.sample(s, uv + float2(texelStep.x, 0.0)).rgb);
-	float3 h = saturate(tex.sample(s, uv + float2(0.0, texelStep.y)).rgb);
+static float3 apply_cas_rgb(texture2d<float> tex, sampler s, float2 uv, float2 stepUV, float3 center, float sharpness) {
+	float3 b = saturate(tex.sample(s, uv + float2(0.0, -stepUV.y)).rgb);
+	float3 d = saturate(tex.sample(s, uv + float2(-stepUV.x, 0.0)).rgb);
+	float3 f = saturate(tex.sample(s, uv + float2(stepUV.x, 0.0)).rgb);
+	float3 h = saturate(tex.sample(s, uv + float2(0.0, stepUV.y)).rgb);
 
 	float3 mn = min(min(min(b, d), min(f, h)), center);
 	float3 mx = max(max(max(b, d), max(f, h)), center);
@@ -203,6 +202,7 @@ struct BlitUniforms {
 	float gamma;
 	int bt2020;       // 0 = BT.709, 1 = BT.2020
 	float sharpness;  // 0.0 ... 1.0 CAS sharpening
+	int downsample4K; // 0 = direct sample, 1 = 4-tap supersample downsample
 };
 
 vertex VertexOut blit_vertex(uint vid [[vertex_id]], constant BlitUniforms &u [[buffer(0)]]) {
@@ -218,9 +218,24 @@ fragment float4 blit_fragment(VertexOut in [[stage_in]],
                               texture2d<float> srcTex [[texture(0)]],
                               constant BlitUniforms &u [[buffer(0)]]) {
 	constexpr sampler s(filter::linear, address::clamp_to_edge);
-	float3 rgb = saturate(srcTex.sample(s, in.uv).rgb);
+	float2 ddx = dfdx(in.uv);
+	float2 ddy = dfdy(in.uv);
+	float3 rgb;
+	if (u.downsample4K != 0) {
+		float2 dx = ddx * 0.25;
+		float2 dy = ddy * 0.25;
+		float3 c = srcTex.sample(s, in.uv - dx - dy).rgb
+		         + srcTex.sample(s, in.uv + dx - dy).rgb
+		         + srcTex.sample(s, in.uv - dx + dy).rgb
+		         + srcTex.sample(s, in.uv + dx + dy).rgb;
+		rgb = saturate(c * 0.25);
+	} else {
+		rgb = saturate(srcTex.sample(s, in.uv).rgb);
+	}
 	if (u.sharpness > 0.001) {
-		rgb = apply_cas_rgb(srcTex, s, in.uv, u.texSize, rgb, u.sharpness);
+		float2 texelStep = 1.0 / max(u.texSize, float2(1.0));
+		float2 stepUV = u.downsample4K != 0 ? max(texelStep, abs(ddx) + abs(ddy)) : texelStep;
+		rgb = apply_cas_rgb(srcTex, s, in.uv, stepUV, rgb, u.sharpness);
 	}
 	if (u.colorAdjust != 0) {
 		rgb = apply_color_adjustments(rgb, u.brightness, u.contrast, u.saturation, u.gamma, u.transferMode == 1 ? 0 : u.bt2020);

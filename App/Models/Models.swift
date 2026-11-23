@@ -98,6 +98,7 @@ enum UpscalingMode: String, Codable, CaseIterable, Identifiable {
 	case off
 	case bicubic
 	case metalFX
+	case metalFX4K
 	case vtSuperRes
 
 	var id: String { rawValue }
@@ -106,9 +107,11 @@ enum UpscalingMode: String, Codable, CaseIterable, Identifiable {
 		case .off: "Off (Bilinear)"
 		case .bicubic: "Catmull-Rom (Shader)"
 		case .metalFX: "MetalFX Spatial (GPU)"
+		case .metalFX4K: "MetalFX 4K (Supersample)"
 		case .vtSuperRes: "Apple ML Super Res (iOS 26+)"
 		}
 	}
+	var usesMetalFX: Bool { self == .metalFX || self == .metalFX4K }
 }
 
 enum FrameGenMode: String, Codable, CaseIterable, Identifiable {
@@ -270,6 +273,9 @@ struct StreamSettings: Codable, Equatable {
 	var selectIsTouchpad: Bool = false
 	/// Keep a ProMotion screen at 120 Hz while streaming, so frames wait less for the next refresh
 	var highRefreshDisplay: Bool = true
+	/// Optional: ride out network hitches (adaptive reorder wait 16-40 ms, decode through lost
+	/// frames while waiting for IDR, and adaptive 1-2 frame jitter buffer when Frame Gen is off).
+	var networkSmoothing: Bool = false
 
 	/// HDR needs HEVC
 	var effectiveCodec: VideoCodecChoice { hdr ? .h265 : codec }
@@ -319,6 +325,7 @@ struct StreamSettings: Codable, Equatable {
 		}
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
 		highRefreshDisplay = try c.decodeIfPresent(Bool.self, forKey: .highRefreshDisplay) ?? d.highRefreshDisplay
+		networkSmoothing = try c.decodeIfPresent(Bool.self, forKey: .networkSmoothing) ?? d.networkSmoothing
 	}
 
 	mutating func applyGTA6Preset() {

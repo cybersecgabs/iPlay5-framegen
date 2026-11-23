@@ -683,6 +683,11 @@ private struct StatsOverlay: View {
 			Text(String(format: "ping %.0f ms  loss %.1f%%", stats.rttMs, stats.packetLoss * 100))
 			if stats.displayHz > 0 { Text("display \(Int(stats.displayHz)) Hz") }
 			Text("lost \(stats.lostFrames)  failed \(stats.failedFrames)")
+			if let s = stats.smoothing {
+				Text(String(format: "smooth: wait %.0f ms  late %d/%d pkts", s.waitMs, s.packetsLate, s.packetsSkipped))
+				Text("  fec fail \(s.fecFailures)  patched \(s.framesPatched)")
+				Text("  held \(s.heldFrames)  dropped \(s.droppedFrames)  dry \(s.underruns)")
+			}
 			if let controller = stats.controller { Text(controller) }
 			if let err = stats.enhancerError {
 				Text(err).foregroundStyle(.orange)

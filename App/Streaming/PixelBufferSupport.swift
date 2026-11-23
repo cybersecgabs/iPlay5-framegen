@@ -168,6 +168,36 @@ enum PixelBufferSupport {
 		inputWidth: Int,
 		inputHeight: Int,
 		drawableSize: CGSize,
+		zoomLevel: Double,
+		upscalingMode: UpscalingMode
+	) -> (width: Int, height: Int)? {
+		switch upscalingMode {
+		case .metalFX:
+			computeUpscaleTargetSize(inputWidth: inputWidth, inputHeight: inputHeight, drawableSize: drawableSize, zoomLevel: zoomLevel)
+		case .metalFX4K:
+			computeMetalFX4KTargetSize(inputWidth: inputWidth, inputHeight: inputHeight)
+		case .off, .bicubic, .vtSuperRes:
+			nil
+		}
+	}
+
+	static func computeMetalFX4KTargetSize(inputWidth: Int, inputHeight: Int) -> (width: Int, height: Int)? {
+		guard inputWidth > 0, inputHeight > 0 else { return nil }
+		let iw = Double(inputWidth)
+		let ih = Double(inputHeight)
+		let rawScale = min(3840.0 / iw, 2160.0 / ih)
+		guard rawScale > 1.01 else { return nil }
+		let scale = min(rawScale, 4.0)
+		let outW = roundEven(iw * scale)
+		let outH = roundEven(ih * scale)
+		guard outW > inputWidth, outH > inputHeight else { return nil }
+		return (outW, outH)
+	}
+
+	static func computeUpscaleTargetSize(
+		inputWidth: Int,
+		inputHeight: Int,
+		drawableSize: CGSize,
 		zoomLevel: Double
 	) -> (width: Int, height: Int)? {
 		guard inputWidth > 0, inputHeight > 0,
