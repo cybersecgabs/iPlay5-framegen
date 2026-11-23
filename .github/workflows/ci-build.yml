@@ -15,10 +15,9 @@ jobs:
     name: Build, Test and Package Unsigned IPA
     runs-on: macos-26
     steps:
-      - name: Checkout repository with submodules
+      # Submodules are only fetched by the ChiakiKit action on a cache miss
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Select latest stable Xcode
         uses: maxim-lobanov/setup-xcode@v1
@@ -30,29 +29,19 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Install build tools
-        run: |
-          brew install cmake ninja xcodegen
-          xcodebuild -showComponent MetalToolchain >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
-
-      - name: Compute vendor tree hash
-        id: vendor-hash
-        run: |
-          HASH=$(git ls-tree HEAD vendor | shasum -a 256 | awk '{print $1}')
-          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
-
-      - name: Cache ChiakiKit.xcframework
-        uses: actions/cache@v4
-        id: chiaki-cache
+      - name: Restore or build ChiakiKit.xcframework
+        uses: ./.github/actions/chiakikit
         with:
-          path: Frameworks/ChiakiKit.xcframework
-          key: chiakikit-${{ runner.os }}-${{ steps.vendor-hash.outputs.hash }}-${{ hashFiles('ChiakiKit/**', 'scripts/build-chiaki.sh') }}
+          slices: "ios sim"
+          save: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
 
-      - name: Build ChiakiKit.xcframework
-        if: steps.chiaki-cache.outputs.cache-hit != 'true'
+      - name: Install build tools
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: |
-          chmod +x scripts/*.sh
-          scripts/build-chiaki.sh
+          command -v xcodegen >/dev/null || brew install xcodegen
+          xcodebuild -showComponent MetalToolchain >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
 
       - name: Generate Xcode project
         run: xcodegen generate
