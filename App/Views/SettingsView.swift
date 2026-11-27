@@ -216,6 +216,32 @@ struct StreamSettingsForm: View {
 		} footer: {
 			Text("Auto uses controller motors if present or the iPhone Taptic Engine otherwise (e.g. GameSir G8). Phone gyro is used when the controller has no motion sensors. Quick shortcuts: Select + R1 toggles Frame Gen, Select + L1 cycles Stats HUD, hold Select + Start to open Quick Tuning.")
 		}
+
+		Section {
+			Picker("On-screen controls", selection: $settings.virtualControls) {
+				ForEach(VirtualControlsMode.allCases) { Text($0.label).tag($0) }
+			}
+			if settings.virtualControls != .never {
+				Picker("Size", selection: $settings.controlsSize) {
+					ForEach(ControlsSize.allCases) { Text($0.label).tag($0) }
+				}
+				VStack(alignment: .leading) {
+					HStack {
+						Text("Opacity")
+						Spacer()
+						Text("\(Int((settings.controlsOpacity * 100).rounded()))%")
+							.foregroundStyle(.secondary)
+							.monospacedDigit()
+					}
+					Slider(value: $settings.controlsOpacity, in: 0.2...1.0, step: 0.05)
+				}
+				Toggle("Fixed sticks", isOn: $settings.fixedSticks)
+			}
+		} header: {
+			Text("Virtual Controls")
+		} footer: {
+			Text("Auto shows on-screen controls when no physical controller is connected. Sticks appear wherever your thumb lands in the lower half unless Fixed sticks is on. The upper half acts as the touchpad.")
+		}
 	}
 }
 

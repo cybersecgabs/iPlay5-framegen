@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Observation
 
@@ -181,6 +182,56 @@ enum StatsOverlayMode: String, Codable, CaseIterable, Identifiable {
 	}
 }
 
+/// When on-screen virtual controls are shown over the stream
+enum VirtualControlsMode: String, Codable, CaseIterable, Identifiable {
+	case auto
+	case always
+	case never
+
+	var id: Self { self }
+
+	var label: String {
+		switch self {
+		case .auto: "Auto"
+		case .always: "Always show"
+		case .never: "Never show"
+		}
+	}
+
+	var shortLabel: String {
+		switch self {
+		case .auto: "Auto"
+		case .always: "On"
+		case .never: "Off"
+		}
+	}
+}
+
+/// Relative scale of the on-screen virtual controls
+enum ControlsSize: String, Codable, CaseIterable, Identifiable {
+	case small
+	case medium
+	case large
+
+	var id: Self { self }
+
+	var label: String {
+		switch self {
+		case .small: "Small"
+		case .medium: "Medium"
+		case .large: "Large"
+		}
+	}
+
+	var scale: CGFloat {
+		switch self {
+		case .small: 0.85
+		case .medium: 1.0
+		case .large: 1.15
+		}
+	}
+}
+
 struct ColorAdjustments: Codable, Equatable {
 	/// Additive brightness offset (-0.30 ... +0.30), 0.0 = neutral
 	var brightness: Double = 0.0
@@ -271,6 +322,14 @@ struct StreamSettings: Codable, Equatable {
 	var rumbleIntensity: Double = 1.0
 	/// Use the controller's Select/View button as the DualSense touchpad click
 	var selectIsTouchpad: Bool = false
+	/// When on-screen virtual controls are shown over the stream (auto hides when a controller is paired)
+	var virtualControls: VirtualControlsMode = .auto
+	/// Size of the on-screen virtual controls
+	var controlsSize: ControlsSize = .medium
+	/// 0.2...1, multiplies the virtual controls' own transparency
+	var controlsOpacity: Double = 1.0
+	/// Sticks stay put in their own spots instead of starting wherever a thumb lands
+	var fixedSticks: Bool = false
 	/// Keep a ProMotion screen at 120 Hz while streaming, so frames wait less for the next refresh
 	var highRefreshDisplay: Bool = true
 	/// Optional: ride out network hitches (adaptive reorder wait 16-40 ms, decode through lost
@@ -327,6 +386,10 @@ struct StreamSettings: Codable, Equatable {
 			rumbleIntensity = d.rumbleIntensity
 		}
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
+		virtualControls = (try? c.decodeIfPresent(VirtualControlsMode.self, forKey: .virtualControls)) ?? d.virtualControls
+		controlsSize = (try? c.decodeIfPresent(ControlsSize.self, forKey: .controlsSize)) ?? d.controlsSize
+		controlsOpacity = min(1.0, max(0.2, try c.decodeIfPresent(Double.self, forKey: .controlsOpacity) ?? d.controlsOpacity))
+		fixedSticks = try c.decodeIfPresent(Bool.self, forKey: .fixedSticks) ?? d.fixedSticks
 		highRefreshDisplay = try c.decodeIfPresent(Bool.self, forKey: .highRefreshDisplay) ?? d.highRefreshDisplay
 		networkSmoothing = try c.decodeIfPresent(Bool.self, forKey: .networkSmoothing) ?? d.networkSmoothing
 		takionV20 = try c.decodeIfPresent(Bool.self, forKey: .takionV20) ?? d.takionV20

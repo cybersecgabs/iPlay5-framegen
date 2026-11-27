@@ -103,6 +103,7 @@ final class StreamSession {
 	@ObservationIgnored private var touchIDs: [Int: Int32] = [:]
 	/// Latest controller state, so screen taps can add a touchpad click on top of it
 	@ObservationIgnored private var lastPad = CKPadState()
+	@ObservationIgnored private var virtualPad = VirtualPadState()
 	@ObservationIgnored private var extraButtons: UInt32 = 0
 	@ObservationIgnored private var screenTapWork: [Int: DispatchWorkItem] = [:]
 	@ObservationIgnored private var screenTapTouchUpWork: [Int: DispatchWorkItem] = [:]
@@ -372,11 +373,7 @@ final class StreamSession {
 	/// while we can't see the controller (iOS doesn't send controller input to background apps)
 	private func releaseInput() {
 		lastPad = CKPadState()
-		screenTapWork.values.forEach { $0.cancel() }
-		screenTapWork.removeAll()
-		screenTapTouchUpWork.values.forEach { $0.cancel() }
-		screenTapTouchUpWork.removeAll()
-		extraButtons = 0
+		resetScreenInput()
 		for slot in Array(touchIDs.keys) { handleTouch(.up(slot: slot)) }
 		sendPad()
 		input.rumble.setPaused(true)
@@ -529,6 +526,7 @@ final class StreamSession {
 		screenTapWork.removeAll()
 		screenTapTouchUpWork.values.forEach { $0.cancel() }
 		screenTapTouchUpWork.removeAll()
+		virtualPad = VirtualPadState()
 		extraButtons = 0
 		touchIDs.removeAll()
 		input.stop()
@@ -643,12 +641,31 @@ final class StreamSession {
 
 	private func sendPad() {
 		guard let handle else { return }
-		var pad = lastPad
-		pad.buttons |= extraButtons
+		var pad = VirtualPadState.merge(physical: lastPad, virtual: virtualPad, extraButtons: extraButtons)
 		ck_session_set_pad(handle, &pad)
 	}
 
-	// MARK: - On-screen touchpad (main thread)
+	// MARK: - Virtual controls & on-screen touchpad (main thread)
+
+	func setVirtualPad(_ pad: VirtualPadState) {
+		virtualPad = pad
+		sendPad()
+	}
+
+	func resetScreenInput() {
+		let hadScreenState = virtualPad != VirtualPadState()
+			|| extraButtons != 0
+			|| !screenTapWork.isEmpty
+			|| !screenTapTouchUpWork.isEmpty
+		virtualPad = VirtualPadState()
+		screenTapWork.values.forEach { $0.cancel() }
+		screenTapWork.removeAll()
+		screenTapTouchUpWork.values.forEach { $0.cancel() }
+		screenTapTouchUpWork.removeAll()
+		extraButtons = 0
+		if hadScreenState { sendPad() }
+		for slot in Array(touchIDs.keys.filter { $0 >= 10 }) { handleTouch(.up(slot: slot)) }
+	}
 
 	func screenTouch(_ event: ControllerInput.TouchEvent) {
 		if case .down(let slot, _, _) = event {

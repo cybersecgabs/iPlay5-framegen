@@ -237,4 +237,40 @@ final class StreamSettingsTests: XCTestCase {
 		let decoded = try JSONDecoder().decode(StreamSettings.self, from: data)
 		XCTAssertTrue(decoded.takionV20)
 	}
+
+	func testVirtualControlsSettingsDefaultsClampingAndCodable() throws {
+		let defaults = StreamSettings()
+		XCTAssertEqual(defaults.virtualControls, .auto)
+		XCTAssertEqual(defaults.controlsSize, .medium)
+		XCTAssertEqual(defaults.controlsOpacity, 1.0, accuracy: 0.0001)
+		XCTAssertFalse(defaults.fixedSticks)
+		XCTAssertEqual(VirtualControlsMode.auto.shortLabel, "Auto")
+		XCTAssertEqual(VirtualControlsMode.always.shortLabel, "On")
+		XCTAssertEqual(VirtualControlsMode.never.shortLabel, "Off")
+
+		var settings = StreamSettings()
+		settings.virtualControls = .always
+		settings.controlsSize = .large
+		settings.controlsOpacity = 0.55
+		settings.fixedSticks = true
+		let data = try JSONEncoder().encode(settings)
+		let decoded = try JSONDecoder().decode(StreamSettings.self, from: data)
+		XCTAssertEqual(decoded.virtualControls, .always)
+		XCTAssertEqual(decoded.controlsSize, .large)
+		XCTAssertEqual(decoded.controlsOpacity, 0.55, accuracy: 0.0001)
+		XCTAssertTrue(decoded.fixedSticks)
+
+		// Opacity clamps to [0.2, 1.0]
+		let tooLow = try JSONDecoder().decode(StreamSettings.self, from: #"{"controlsOpacity":0.0}"#.data(using: .utf8)!)
+		XCTAssertEqual(tooLow.controlsOpacity, 0.2, accuracy: 0.0001)
+		let tooHigh = try JSONDecoder().decode(StreamSettings.self, from: #"{"controlsOpacity":2.0}"#.data(using: .utf8)!)
+		XCTAssertEqual(tooHigh.controlsOpacity, 1.0, accuracy: 0.0001)
+
+		// Legacy JSON keeps defaults
+		let legacy = try JSONDecoder().decode(StreamSettings.self, from: #"{"fps":60}"#.data(using: .utf8)!)
+		XCTAssertEqual(legacy.virtualControls, .auto)
+		XCTAssertEqual(legacy.controlsSize, .medium)
+		XCTAssertEqual(legacy.controlsOpacity, 1.0, accuracy: 0.0001)
+		XCTAssertFalse(legacy.fixedSticks)
+	}
 }

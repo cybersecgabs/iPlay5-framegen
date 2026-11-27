@@ -19,8 +19,9 @@ struct StreamView: View {
 	/// to turn the phone. Once a stream is landscape, AppDelegate locks it there.
 	@State private var portrait = false
 	@State private var windowSize: CGSize = .zero
-	/// No controller connected yet; we ask before connecting (there are no on-screen controls)
-	@State private var needsController = !Self.hasController
+	@State private var hasController = Self.hasController
+	@State private var autoShowsControls = !Self.hasController
+	@State private var connectWithoutController = false
 	@State private var showSettingsHint = false
 	@State private var showPSButton = false
 	@State private var hidePSButton: Task<Void, Never>?
@@ -36,6 +37,34 @@ struct StreamView: View {
 
 	private static var hasController: Bool {
 		GCController.controllers().contains { $0.extendedGamepad != nil }
+	}
+
+	private var needsController: Bool {
+		!hasController && settingsStore.settings.virtualControls == .never && !connectWithoutController
+	}
+
+	private var acceptsScreenInput: Bool {
+		guard let session else { return false }
+		return session.state == .streaming && session.keyboardText == nil
+			&& !folded && !portrait && !showMenu && !showQuickDrawer && scenePhase == .active
+	}
+
+	private var wantsVirtualControls: Bool {
+		switch settingsStore.settings.virtualControls {
+		case .auto: !hasController && autoShowsControls
+		case .always: true
+		case .never: false
+		}
+	}
+
+	private var showsVirtualControls: Bool {
+		acceptsScreenInput && wantsVirtualControls
+	}
+
+	private func letterboxAspect(for session: StreamSession) -> CGFloat? {
+		guard settingsStore.settings.zoomLevel < 0.05 else { return nil }
+		let w = session.stats.width, h = session.stats.height
+		return w > 0 && h > 0 ? CGFloat(w) / CGFloat(h) : (16.0 / 9.0)
 	}
 
 	var body: some View {
@@ -54,6 +83,7 @@ struct StreamView: View {
 		.onAppear {
 			stopped = false
 			AppDelegate.setStreaming(true)
+			refreshControllerPresence()
 		}
 		.onDisappear(perform: stop)
 		.onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
@@ -65,9 +95,16 @@ struct StreamView: View {
 			DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
 		}
 		.onReceive(NotificationCenter.default.publisher(for: .GCControllerDidConnect)) { _ in
-			guard needsController, Self.hasController else { return }
-			needsController = false
-			update()
+			refreshControllerPresence()
+		}
+		.onReceive(NotificationCenter.default.publisher(for: .GCControllerDidDisconnect)) { _ in
+			refreshControllerPresence()
+		}
+		.task(id: hasController) {
+			guard !hasController, !autoShowsControls else { return }
+			try? await Task.sleep(for: .seconds(1))
+			guard !Task.isCancelled, !hasController else { return }
+			autoShowsControls = true
 		}
 		.onChange(of: session?.state == .streaming) { _, streaming in
 			guard streaming, !hintShown else { return }
@@ -80,10 +117,14 @@ struct StreamView: View {
 			}
 		}
 		.onChange(of: scenePhase) { _, phase in
+			if phase == .active { refreshControllerPresence() }
 			session?.setPaused(phase != .active || folded || portrait)
 		}
 		.onChange(of: settingsStore.settings) { _, new in
 			session?.apply(new)
+			if new.virtualControls == .auto && !hasController {
+				autoShowsControls = true
+			}
 		}
 		.sheet(isPresented: $showMenu) { menu }
 	}
@@ -97,6 +138,12 @@ struct StreamView: View {
 					renderer: renderer,
 					highRefresh: session.settings.highRefreshDisplay,
 					frameGenActive: session.settings.frameGenMode != .off,
+					acceptsInput: acceptsScreenInput,
+					virtualControls: showsVirtualControls,
+					controlsStyle: VirtualControlsStyle(settingsStore.settings),
+					videoAspectForLetterbox: letterboxAspect(for: session),
+					onVirtualPad: { [weak session] in session?.setVirtualPad($0) },
+					onReset: { [weak session] in session?.resetScreenInput() },
 					onTouch: { [weak session] in session?.screenTouch($0) },
 					onTap: { [weak session] in session?.screenTap(slot: $0) },
 					onCornerTap: revealMenuButton,
@@ -196,6 +243,17 @@ struct StreamView: View {
 	}
 
 	// MARK: - Lifecycle
+
+	private func refreshControllerPresence() {
+		let connected = Self.hasController
+		hasController = connected
+		if connected {
+			autoShowsControls = false
+		}
+		if session == nil, !needsController, !stopped, windowSize != .zero {
+			update()
+		}
+	}
 
 	private func startSession() {
 		let session = StreamSession(console: console, settings: settingsStore.settings)
@@ -502,14 +560,20 @@ struct StreamView: View {
 			VStack(spacing: 8) {
 				Image(systemName: "gamecontroller.fill").font(.largeTitle)
 				Text("Connect a controller").font(.title2.bold())
-				Text("iPlay5 has no on-screen controls. Turn on your controller or pair it in Settings › Bluetooth, and \(console.name) connects as soon as it's found.")
+				Text("On-screen controls are turned off in Settings. Turn on your controller, or turn on-screen controls back on.")
 					.multilineTextAlignment(.center)
 					.foregroundStyle(.secondary)
 					.frame(maxWidth: 420)
 				HStack {
 					Button("Cancel") { dismiss() }.buttonStyle(.bordered)
+					Button("Use on-screen controls") {
+						settingsStore.settings.virtualControls = .auto
+						autoShowsControls = true
+						update()
+					}
+					.buttonStyle(.borderedProminent)
 					Button("Connect anyway") {
-						needsController = false
+						connectWithoutController = true
 						update()
 					}
 					.buttonStyle(.bordered)
@@ -747,6 +811,12 @@ private struct MetalStreamView: UIViewRepresentable {
 	let renderer: MetalRenderer
 	let highRefresh: Bool
 	let frameGenActive: Bool
+	let acceptsInput: Bool
+	let virtualControls: Bool
+	let controlsStyle: VirtualControlsStyle
+	let videoAspectForLetterbox: CGFloat?
+	let onVirtualPad: (VirtualPadState) -> Void
+	let onReset: () -> Void
 	let onTouch: (ControllerInput.TouchEvent) -> Void
 	let onTap: (Int) -> Void
 	let onCornerTap: () -> Void
@@ -762,11 +832,16 @@ private struct MetalStreamView: UIViewRepresentable {
 	func updateUIView(_ uiView: StreamMetalView, context: Context) {
 		uiView.highRefresh = highRefresh
 		uiView.frameGenActive = frameGenActive
+		uiView.videoAspectForLetterbox = videoAspectForLetterbox
+		uiView.onVirtualPad = onVirtualPad
+		uiView.onReset = onReset
 		uiView.onTouch = onTouch
 		uiView.onTap = onTap
 		uiView.onCornerTap = onCornerTap
 		uiView.onLeftCornerTap = onLeftCornerTap
 		uiView.onDisplayTick = onDisplayTick
+		uiView.setControlsStyle(controlsStyle)
+		uiView.setInputMode(acceptsInput: acceptsInput, virtualControls: virtualControls)
 	}
 
 	static func dismantleUIView(_ uiView: StreamMetalView, coordinator: ()) {

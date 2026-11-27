@@ -710,11 +710,10 @@ private final class DisplayLinkProxy {
 }
 
 /// UIView backed by a CAMetalLayer at the screen's native pixel density.
-/// Touches act as the DualSense touchpad, except the top-right corner which
-/// reveals the stream menu button.
+/// Routes multi-touch input between on-screen virtual controls (when shown),
+/// DualSense touchpad gestures, and the top-left / top-right hot corners.
 final class StreamMetalView: UIView {
-	override class var layerClass: AnyClass { CAMetalLayer.self }
-	var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
+	private let metalLayer = CAMetalLayer()
 
 	let renderer: MetalRenderer
 
@@ -722,12 +721,22 @@ final class StreamMetalView: UIView {
 	var onTouch: ((ControllerInput.TouchEvent) -> Void)?
 	/// A quick tap that didn't move: sent instead of `.up` so it can become a click.
 	var onTap: ((Int) -> Void)?
-	/// Top-right hot corner (settings)
+	/// Top-right hot corner (settings / Quick Tuning)
 	var onCornerTap: (() -> Void)?
 	/// Top-left hot corner (PS button)
 	var onLeftCornerTap: (() -> Void)?
+	var onVirtualPad: ((VirtualPadState) -> Void)?
+	var onReset: (() -> Void)?
+	var videoAspectForLetterbox: CGFloat? {
+		didSet { if videoAspectForLetterbox != oldValue { setNeedsLayout() } }
+	}
 	/// Called on every CADisplayLink tick with (targetTimestamp, vsyncIntervalSeconds)
 	var onDisplayTick: ((Double, Double) -> Void)?
+
+	private var acceptsInput = false
+	private let controls = VirtualControlsOverlay(frame: .zero)
+	private var controlsArea = CGRect.null
+	private var systemButtonY: CGFloat?
 
 	/// Hot corner size in points, at the top-right and top-left of the view
 	static let cornerSize = CGSize(width: 140, height: 90)
@@ -758,6 +767,9 @@ final class StreamMetalView: UIView {
 		super.init(frame: .zero)
 		backgroundColor = .black
 		isMultipleTouchEnabled = true
+		controls.isHidden = true
+		layer.addSublayer(metalLayer)
+		addSubview(controls)
 		renderer.attach(metalLayer)
 	}
 
@@ -772,6 +784,7 @@ final class StreamMetalView: UIView {
 
 	override func didMoveToWindow() {
 		super.didMoveToWindow()
+		if window == nil { resetTouches() }
 		updateDisplayLink()
 	}
 
@@ -819,28 +832,113 @@ final class StreamMetalView: UIView {
 		// Native scale: render at the panel's real resolution, not the UIKit point scale
 		let scale = window?.screen.nativeScale ?? UIScreen.main.nativeScale
 		contentScaleFactor = scale
+		CATransaction.begin()
+		CATransaction.setDisableActions(true)
+		metalLayer.frame = bounds
 		metalLayer.contentsScale = scale
-		renderer.setDrawableSize(CGSize(width: bounds.width * scale, height: bounds.height * scale))
+		let size = CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())
+		renderer.setDrawableSize(size)
+		CATransaction.commit()
+		let area = bounds.inset(by: safeAreaInsets)
+		let buttonY = bottomSystemButtonY(in: area)
+		if controls.frame != bounds || controlsArea != area || systemButtonY != buttonY {
+			resetTouches()
+			controlsArea = area
+			systemButtonY = buttonY
+			controls.frame = bounds
+			controls.setLayout(in: area, systemButtonY: buttonY)
+		}
 	}
 
-	// MARK: Touchpad
+	private func bottomSystemButtonY(in safeArea: CGRect) -> CGFloat {
+		let halfHeight = VirtualControlsOverlay.systemButtonHeight / 2
+		if let aspect = videoAspectForLetterbox, aspect > 0 {
+			let videoBottom = bounds.midY + bounds.width / aspect / 2
+			let firstCentreInBar = videoBottom + halfHeight + 4
+			let lastCentreInBar = bounds.maxY - halfHeight - 12
+			if firstCentreInBar <= lastCentreInBar {
+				let preferredCentre = (videoBottom + safeArea.maxY) / 2
+				return min(max(preferredCentre, firstCentreInBar), lastCentreInBar)
+			}
+		}
+		return safeArea.maxY - halfHeight - 4
+	}
+
+	override func safeAreaInsetsDidChange() {
+		super.safeAreaInsetsDidChange()
+		setNeedsLayout()
+	}
+
+	/// Size, opacity and stick behaviour. A change lets go of anything held, since the layout moves.
+	func setControlsStyle(_ style: VirtualControlsStyle) {
+		guard controls.style != style else { return }
+		resetTouches()
+		controls.style = style
+	}
+
+	func setInputMode(acceptsInput: Bool, virtualControls: Bool) {
+		let hideControls = !acceptsInput || !virtualControls
+		guard self.acceptsInput != acceptsInput || controls.isHidden != hideControls else { return }
+		resetTouches()
+		self.acceptsInput = acceptsInput
+		controls.isHidden = hideControls
+	}
+
+	private func resetTouches() {
+		tracked.removeAll()
+		controls.reset()
+		onReset?()
+	}
+
+	// MARK: Touchpad & Virtual Controls
+
+	private var shortcutSize: CGSize {
+		controls.isHidden ? Self.cornerSize : CGSize(width: 84, height: 52)
+	}
 
 	private var cornerRect: CGRect {
-		CGRect(x: bounds.maxX - Self.cornerSize.width, y: bounds.minY, width: Self.cornerSize.width, height: Self.cornerSize.height)
+		let size = shortcutSize
+		return CGRect(x: bounds.maxX - size.width, y: bounds.minY, width: size.width, height: size.height)
 	}
 
 	private var leftCornerRect: CGRect {
-		CGRect(x: bounds.minX, y: bounds.minY, width: Self.cornerSize.width, height: Self.cornerSize.height)
+		let size = shortcutSize
+		return CGRect(x: bounds.minX, y: bounds.minY, width: size.width, height: size.height)
+	}
+
+	/// With virtual controls, the upper half maps to the whole DualSense touchpad and the
+	/// lower half is left for sticks and buttons. Otherwise, the whole picture is the touchpad.
+	private var touchpadRect: CGRect {
+		guard controls.isHidden else {
+			return CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height / 2)
+		}
+		return videoRect
+	}
+
+	private var videoRect: CGRect {
+		guard let aspect = videoAspectForLetterbox, aspect > 0, bounds.width > 0, bounds.height > 0 else { return bounds }
+		if bounds.width / bounds.height > aspect {
+			let width = bounds.height * aspect
+			return CGRect(x: bounds.midX - width / 2, y: bounds.minY, width: width, height: bounds.height)
+		}
+		let height = bounds.width / aspect
+		return CGRect(x: bounds.minX, y: bounds.midY - height / 2, width: bounds.width, height: height)
+	}
+
+	private func startsTouchpadTouch(at p: CGPoint) -> Bool {
+		controls.isHidden ? bounds.contains(p) : touchpadRect.contains(p)
 	}
 
 	private func touchpadPoint(_ p: CGPoint) -> (UInt16, UInt16) {
-		guard bounds.width > 0, bounds.height > 0 else { return (0, 0) }
-		let nx = min(max(p.x / bounds.width, 0), 1)
-		let ny = min(max(p.y / bounds.height, 0), 1)
+		let area = touchpadRect
+		guard area.width > 0, area.height > 0 else { return (0, 0) }
+		let nx = min(max((p.x - area.minX) / area.width, 0), 1)
+		let ny = min(max((p.y - area.minY) / area.height, 0), 1)
 		return (UInt16((nx * 1919).rounded()), UInt16((ny * 1079).rounded()))
 	}
 
 	override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+		guard acceptsInput else { return }
 		for touch in touches {
 			let p = touch.location(in: self)
 			if cornerRect.contains(p) {
@@ -851,6 +949,14 @@ final class StreamMetalView: UIView {
 				onLeftCornerTap?()
 				continue
 			}
+			let inTouchpad = startsTouchpadTouch(at: p)
+			if !controls.isHidden {
+				let key = ObjectIdentifier(touch)
+				let result = controls.begin(key, at: p, allowsStick: !inTouchpad)
+				if let state = result.state { onVirtualPad?(state) }
+				if result.handled { continue }
+			}
+			guard inTouchpad else { continue }
 			let used = Set(tracked.values.map(\.slot))
 			guard let slot = [10, 11].first(where: { !used.contains($0) }) else { continue }
 			tracked[ObjectIdentifier(touch)] = Tracked(slot: slot, start: p, time: touch.timestamp)
@@ -862,8 +968,11 @@ final class StreamMetalView: UIView {
 	override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
 		for touch in touches {
 			let key = ObjectIdentifier(touch)
-			guard var t = tracked[key] else { continue }
 			let p = touch.location(in: self)
+			guard var t = tracked[key] else {
+				if let state = controls.move(key, to: p) { onVirtualPad?(state) }
+				continue
+			}
 			if !t.moved, hypot(p.x - t.start.x, p.y - t.start.y) > Self.tapMaxMovement {
 				t.moved = true
 				tracked[key] = t
@@ -874,20 +983,25 @@ final class StreamMetalView: UIView {
 	}
 
 	override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+		finishTouches(touches, allowsTap: true)
+	}
+
+	override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+		finishTouches(touches, allowsTap: false)
+	}
+
+	private func finishTouches(_ touches: Set<UITouch>, allowsTap: Bool) {
 		for touch in touches {
-			guard let t = tracked.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
-			if !t.moved, touch.timestamp - t.time <= Self.tapMaxDuration {
+			let key = ObjectIdentifier(touch)
+			guard let t = tracked.removeValue(forKey: key) else {
+				if let state = controls.end(key) { onVirtualPad?(state) }
+				continue
+			}
+			if allowsTap, !t.moved, touch.timestamp - t.time <= Self.tapMaxDuration {
 				onTap?(t.slot)
 			} else {
 				onTouch?(.up(slot: t.slot))
 			}
-		}
-	}
-
-	override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-		for touch in touches {
-			guard let t = tracked.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
-			onTouch?(.up(slot: t.slot))
 		}
 	}
 }

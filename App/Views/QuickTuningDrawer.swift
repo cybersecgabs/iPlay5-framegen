@@ -23,6 +23,7 @@ struct QuickTuningDrawer: View {
 						displayCard
 						colorCard
 						hapticsCard
+						virtualControlsCard
 						footerCard
 					}
 					.padding(14)
@@ -245,6 +246,37 @@ struct QuickTuningDrawer: View {
 						step: 0.05
 					)
 				}
+			}
+		}
+	}
+
+	private var virtualControlsCard: some View {
+		drawerCard("On-Screen Controls") {
+			Picker("Mode", selection: $settings.virtualControls) {
+				ForEach(VirtualControlsMode.allCases) { mode in
+					Text(mode.shortLabel).tag(mode)
+				}
+			}
+			.pickerStyle(.segmented)
+
+			if settings.virtualControls != .never {
+				Picker("Size", selection: $settings.controlsSize) {
+					ForEach(ControlsSize.allCases) { size in
+						Text(size.label).tag(size)
+					}
+				}
+				.pickerStyle(.segmented)
+
+				sliderRow(
+					title: "Opacity",
+					valueText: "\(Int((settings.controlsOpacity * 100).rounded()))%",
+					value: $settings.controlsOpacity,
+					range: 0.2...1.0,
+					step: 0.05
+				)
+
+				Toggle("Fixed sticks", isOn: $settings.fixedSticks)
+					.font(.subheadline)
 			}
 		}
 	}
